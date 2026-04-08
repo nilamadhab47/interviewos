@@ -1,0 +1,21 @@
+{
+  "name": "interviewos",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --parallel -r run dev",
+    "dev:web": "pnpm --filter @interviewos/web dev",
+    "dev:api": "pnpm --filter @interviewos/api dev",
+    "build": "pnpm -r run build",
+    "lint": "pnpm -r run lint"
+  },
+  "engines": {
+    "node": ">=18",
+    "pnpm": ">=8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@swc/core",
+      "esbuild"
+    ]
+  }
+}

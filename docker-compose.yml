@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  # ─── PostgreSQL (main database) ───
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - '5433:5432'
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: interviewos
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # ─── Redis (cache, rate limiting, Socket.IO adapter) ───
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+
+  # ─── Judge0 (self-hosted code execution — unlimited) ───
+  judge0-server:
+    image: judge0/judge0:1.13.1
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - '2358:2358'
+    depends_on:
+      - judge0-db
+      - judge0-redis
+    environment:
+      RAILS_MAX_THREADS: 8
+      RAILS_ENV: production
+      POSTGRES_HOST: judge0-db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: judge0
+      POSTGRES_USER: judge0
+      POSTGRES_PASSWORD: judge0
+      REDIS_HOST: judge0-redis
+      REDIS_PORT: 6379
+
+  judge0-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: judge0
+      POSTGRES_PASSWORD: judge0
+      POSTGRES_DB: judge0
+    volumes:
+      - judge0pgdata:/var/lib/postgresql/data
+
+  judge0-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  judge0-workers:
+    image: judge0/judge0:1.13.1
+    restart: unless-stopped
+    privileged: true
+    depends_on:
+      - judge0-server
+    environment:
+      RAILS_MAX_THREADS: 8
+      RAILS_ENV: production
+      POSTGRES_HOST: judge0-db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: judge0
+      POSTGRES_USER: judge0
+      POSTGRES_PASSWORD: judge0
+      REDIS_HOST: judge0-redis
+      REDIS_PORT: 6379
+    command: ['./scripts/workers']
+
+  # ─── LiveKit (self-hosted video — unlimited) ───
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    ports:
+      - '7880:7880'
+      - '7881:7881'
+      - '50000-50060:50000-50060/udp'
+    command: --config /etc/livekit.yaml --dev
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml
+
+volumes:
+  pgdata:
+  judge0pgdata:

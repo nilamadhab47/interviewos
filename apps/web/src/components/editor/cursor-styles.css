@@ -1,0 +1,37 @@
+/* Remote cursor styles for y-monaco awareness */
+
+/* Remote cursor line */
+.yRemoteSelection {
+  background-color: rgba(99, 102, 241, 0.25);
+}
+
+/* Remote cursor caret */
+.yRemoteSelectionHead {
+  position: absolute;
+  border-left: 2px solid;
+  border-color: inherit;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+/* Cursor label (name tag) */
+.yRemoteSelectionHead::after {
+  content: attr(data-name);
+  position: absolute;
+  top: -1.4em;
+  left: -2px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 600;
+  white-space: nowrap;
+  color: white;
+  background-color: inherit;
+  line-height: 1.4;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* Per-user color classes — y-monaco generates these based on clientID */
+/* We override with awareness user.color via dynamic styles */
