@@ -22,8 +22,10 @@ services:
       - '6379:6379'
 
   # ─── Judge0 (self-hosted code execution — unlimited) ───
+  # Uses cgroup-v2-compatible build for Docker Desktop (macOS/Windows).
+  # See: https://github.com/judge0/judge0/issues/583
   judge0-server:
-    image: judge0/judge0:1.13.1
+    image: mrkushalsm/judge0:latest
     restart: unless-stopped
     privileged: true
     ports:
@@ -31,6 +33,9 @@ services:
     depends_on:
       - judge0-db
       - judge0-redis
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroup: host
     environment:
       RAILS_MAX_THREADS: 8
       RAILS_ENV: production
@@ -57,11 +62,14 @@ services:
     restart: unless-stopped
 
   judge0-workers:
-    image: judge0/judge0:1.13.1
+    image: mrkushalsm/judge0:latest
     restart: unless-stopped
     privileged: true
     depends_on:
       - judge0-server
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroup: host
     environment:
       RAILS_MAX_THREADS: 8
       RAILS_ENV: production

@@ -1,8 +1,12 @@
-import { useRef, useCallback, useEffect } from 'react';
+import { useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import type { editor } from 'monaco-editor';
 import { MonacoBinding } from 'y-monaco';
 import type { YjsState } from '@/hooks/useYjs';
+
+export interface MonacoEditorHandle {
+  getValue: () => string;
+}
 
 interface MonacoEditorProps {
   language: string;
@@ -12,17 +16,25 @@ interface MonacoEditorProps {
   yjsState?: YjsState | null;
 }
 
-export default function MonacoEditor({
+const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(function MonacoEditor({
   language,
   defaultValue = '',
   onChange,
   readOnly = false,
   yjsState,
-}: MonacoEditorProps) {
+}, ref) {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const bindingRef = useRef<MonacoBinding | null>(null);
   // Track which provider we've bound to, so we skip re-binding on status-only changes
   const boundProviderRef = useRef<unknown>(null);
+
+  useImperativeHandle(ref, () => ({
+    getValue: () => {
+      const fromEditor = editorRef.current?.getValue();
+      if (fromEditor !== undefined && fromEditor !== '') return fromEditor;
+      return yjsState?.ytext?.toString() || '';
+    },
+  }), [yjsState?.ytext]);
 
   const handleMount: OnMount = useCallback(
     (editorInstance) => {
@@ -165,4 +177,6 @@ export default function MonacoEditor({
       />
     </div>
   );
-}
+});
+
+export default MonacoEditor;

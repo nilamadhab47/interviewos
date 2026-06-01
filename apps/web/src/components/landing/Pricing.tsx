@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion';
 import { Check } from 'lucide-react';
 import Button from '@/components/ui/Button';
+import { useLandingNav } from '@/hooks/useLandingNav';
 
 const plans = [
   {
@@ -76,6 +77,8 @@ const cardVariants = {
 };
 
 export default function Pricing() {
+  const { startFree, login } = useLandingNav();
+
   return (
     <section id="pricing" className="relative py-32 px-6">
       <div className="max-w-6xl mx-auto">
@@ -154,6 +157,7 @@ export default function Pricing() {
                   variant={plan.variant}
                   size="md"
                   className="w-full"
+                  to={plan.cta === 'Contact Sales' ? login : startFree}
                 >
                   {plan.cta}
                 </Button>

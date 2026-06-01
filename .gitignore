@@ -1,1 +1,47 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Package managers (this repo uses pnpm)
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Vite / tooling caches
+.vite/
+.turbo/
+.cache/
+
+# Environment (keep *.example committed)
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Logs
+logs/
+*.log
+
+# Drizzle (local dev artifacts — migrations in src/db/migrations are committed)
+# Uncomment if you generate snapshots locally and don't want them tracked:
+# apps/api/src/db/migrations/meta/

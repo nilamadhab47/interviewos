@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Code2, Menu, X } from 'lucide-react';
 import Button from '@/components/ui/Button';
+import { useLandingNav } from '@/hooks/useLandingNav';
 
 const navLinks = [
   { label: 'Features', href: '#features' },
@@ -10,6 +12,7 @@ const navLinks = [
 ];
 
 export default function Navbar() {
+  const { login, start } = useLandingNav();
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -32,14 +35,14 @@ export default function Navbar() {
     >
       <div className="max-w-7xl mx-auto px-6 flex items-center justify-between">
         {/* Logo */}
-        <a href="/" className="flex items-center gap-2.5 group">
+        <Link to="/" className="flex items-center gap-2.5 group">
           <div className="w-8 h-8 bg-accent rounded-lg flex items-center justify-center group-hover:shadow-lg group-hover:shadow-accent/25 transition-shadow">
             <Code2 className="w-4.5 h-4.5 text-white" />
           </div>
           <span className="text-lg font-bold text-text-primary">
             Interview<span className="text-accent-glow">OS</span>
           </span>
-        </a>
+        </Link>
 
         {/* Desktop Links */}
         <div className="hidden md:flex items-center gap-8">
@@ -56,10 +59,12 @@ export default function Navbar() {
 
         {/* Desktop CTA */}
         <div className="hidden md:flex items-center gap-3">
-          <Button variant="ghost" size="sm">
+          <Button variant="ghost" size="sm" to={login}>
             Log In
           </Button>
-          <Button size="sm">Start Free</Button>
+          <Button size="sm" to={start}>
+            Start Free
+          </Button>
         </div>
 
         {/* Mobile Toggle */}
@@ -91,10 +96,12 @@ export default function Navbar() {
               </a>
             ))}
             <div className="flex flex-col gap-2 pt-2 border-t border-border">
-              <Button variant="secondary" size="sm">
+              <Button variant="secondary" size="sm" to={login} onClick={() => setMobileOpen(false)}>
                 Log In
               </Button>
-              <Button size="sm">Start Free</Button>
+              <Button size="sm" to={start} onClick={() => setMobileOpen(false)}>
+                Start Free
+              </Button>
             </div>
           </div>
         </motion.div>

@@ -6,7 +6,7 @@ interface CompileInput {
   stdin?: string;
 }
 
-interface CompileResult {
+export interface CompileResult {
   stdout: string | null;
   stderr: string | null;
   status: string;
@@ -15,8 +15,29 @@ interface CompileResult {
   memoryKb: number | null;
 }
 
+function decodeBase64(val: unknown): string | null {
+  if (typeof val !== 'string' || !val) return null;
+  try {
+    return Buffer.from(val, 'base64').toString('utf-8');
+  } catch {
+    return val;
+  }
+}
+
+function extractJudge0Error(data: Record<string, unknown>): string | null {
+  const compileOutput = decodeBase64(data.compile_output);
+  if (compileOutput?.trim()) return compileOutput.trim();
+
+  const message = decodeBase64(data.message);
+  if (message?.trim()) return message.trim();
+
+  const stderr = decodeBase64(data.stderr);
+  if (stderr?.trim()) return stderr.trim();
+
+  return null;
+}
+
 export async function compileCode(input: CompileInput): Promise<CompileResult> {
-  // Submit to Judge0
   const submitResponse = await fetch(`${JUDGE0_URL}/submissions?base64_encoded=true&wait=false`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -26,51 +47,69 @@ export async function compileCode(input: CompileInput): Promise<CompileResult> {
       stdin: input.stdin ? Buffer.from(input.stdin).toString('base64') : undefined,
       cpu_time_limit: 10,
       wall_time_limit: 15,
-      memory_limit: 256000, // 256MB
+      memory_limit: 256000,
     }),
   });
 
   if (!submitResponse.ok) {
-    throw new Error(`Judge0 submission failed: ${submitResponse.status}`);
+    const body = await submitResponse.text().catch(() => '');
+    throw new Error(
+      `Judge0 is unavailable (${submitResponse.status}). Is docker compose running? ${body}`.trim(),
+    );
   }
 
-  const { token } = await submitResponse.json() as { token: string };
+  const { token } = (await submitResponse.json()) as { token: string };
 
-  // Poll for result
   let result: Record<string, unknown> | null = null;
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 40; i++) {
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     const pollResponse = await fetch(
-      `${JUDGE0_URL}/submissions/${token}?base64_encoded=true&fields=stdout,stderr,status,exit_code,time,memory`,
+      `${JUDGE0_URL}/submissions/${token}?base64_encoded=true&fields=stdout,stderr,compile_output,message,status,exit_code,time,memory`,
     );
 
     if (!pollResponse.ok) continue;
 
-    const data = await pollResponse.json() as Record<string, unknown>;
+    const data = (await pollResponse.json()) as Record<string, unknown>;
     const status = data.status as { id: number; description: string } | undefined;
+    // Status 1-2 = in queue/processing; >2 = finished
     if (status && status.id > 2) {
-      // Status > 2 means processing is done
       result = data;
       break;
     }
   }
 
   if (!result) {
-    throw new Error('Compilation timed out');
+    throw new Error('Code execution timed out. Judge0 may still be starting — wait 30s and try again.');
   }
 
-  const decode = (val: unknown) =>
-    typeof val === 'string' ? Buffer.from(val, 'base64').toString('utf-8') : null;
+  const statusObj = result.status as { id: number; description: string } | undefined;
+  const statusDescription = statusObj?.description || 'Unknown';
+  const stdout = decodeBase64(result.stdout);
+  let stderr = decodeBase64(result.stderr);
+  const exitCode = typeof result.exit_code === 'number' ? result.exit_code : null;
 
-  const status = result.status as { description: string } | undefined;
+  // Surface compile/runtime errors from Judge0 message fields
+  if (statusObj && statusObj.id !== 3 && statusObj.id !== 4) {
+    const detail = extractJudge0Error(result);
+    if (detail) {
+      stderr = stderr ? `${stderr}\n${detail}` : detail;
+    } else if (statusDescription === 'Internal Error') {
+      stderr =
+        'Judge0 sandbox error. On macOS/Windows, restart with: docker compose up -d judge0-server judge0-workers';
+    }
+  }
+
+  const timeMs =
+    typeof result.time === 'string' ? parseFloat(result.time) * 1000 : null;
+  const memoryKb = typeof result.memory === 'number' ? result.memory : null;
 
   return {
-    stdout: decode(result.stdout),
-    stderr: decode(result.stderr),
-    status: status?.description || 'Unknown',
-    exitCode: typeof result.exit_code === 'number' ? result.exit_code : null,
-    timeMs: typeof result.time === 'string' ? parseFloat(result.time) * 1000 : null,
-    memoryKb: typeof result.memory === 'number' ? result.memory : null,
+    stdout,
+    stderr,
+    status: statusDescription,
+    exitCode,
+    timeMs,
+    memoryKb,
   };
 }

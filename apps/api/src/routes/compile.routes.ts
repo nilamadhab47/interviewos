@@ -18,21 +18,25 @@ compileRouter.post('/', requireSessionAuth, async (req, res) => {
       stdin: input.stdin,
     });
 
-    // Store result for audit trail — participantId is only available with session tokens
+    // Store result for audit trail (non-blocking — don't fail the run if logging fails)
     const participantId = req.sessionParticipant?.participantId || null;
-    await db.insert(compilationResults).values({
-      sessionId: input.sessionId,
-      participantId: participantId ?? undefined,
-      language: String(input.languageId),
-      code: input.code,
-      stdin: input.stdin,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      status: result.status,
-      exitCode: result.exitCode,
-      timeMs: result.timeMs,
-      memoryKb: result.memoryKb,
-    });
+    try {
+      await db.insert(compilationResults).values({
+        sessionId: input.sessionId,
+        participantId: participantId ?? undefined,
+        language: String(input.languageId),
+        code: input.code,
+        stdin: input.stdin,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        status: result.status,
+        exitCode: result.exitCode,
+        timeMs: result.timeMs,
+        memoryKb: result.memoryKb,
+      });
+    } catch (logErr) {
+      console.error('[Compile] Failed to log result:', logErr);
+    }
 
     res.json(result);
   } catch (err: unknown) {

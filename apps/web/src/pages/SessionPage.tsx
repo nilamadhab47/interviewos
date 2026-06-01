@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Code2, Play, ChevronDown, Wifi, WifiOff, Video, VideoOff, PanelRightOpen, PanelRightClose } from 'lucide-react';
 import { LANGUAGES, getLanguageById } from '@interviewos/shared';
 import type { SessionPermissions } from '@interviewos/shared';
-import MonacoEditor from '@/components/editor/MonacoEditor';
+import MonacoEditor, { type MonacoEditorHandle } from '@/components/editor/MonacoEditor';
 import '@/components/editor/cursor-styles.css';
 import OutputPanel from '@/components/session/OutputPanel';
 import Sidebar from '@/components/session/Sidebar';
@@ -15,7 +15,7 @@ import { useYjs } from '@/hooks/useYjs';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { useAntiCheat } from '@/hooks/useAntiCheat';
 import { connectSocket } from '@/lib/socket';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 
 interface CompileResult {
   stdout: string | null;
@@ -30,6 +30,7 @@ export default function SessionPage() {
   const { id } = useParams<{ id: string }>();
   const { user, accessToken } = useAuthStore();
   const { session, fetchSession } = useSessionStore();
+  const editorRef = useRef<MonacoEditorHandle>(null);
 
   const [language, setLanguage] = useState('javascript');
   const [compileResult, setCompileResult] = useState<CompileResult | null>(null);
@@ -92,6 +93,8 @@ export default function SessionPage() {
   useAntiCheat({ permissions });
 
   const getCurrentCode = useCallback((): string => {
+    const fromEditor = editorRef.current?.getValue();
+    if (fromEditor?.trim()) return fromEditor;
     return yjsState?.ytext?.toString() || '';
   }, [yjsState?.ytext]);
 
@@ -103,7 +106,17 @@ export default function SessionPage() {
     if (!lang) return;
 
     const code = getCurrentCode();
-    if (!code.trim()) return;
+    if (!code.trim()) {
+      setCompileResult({
+        stdout: null,
+        stderr: 'Editor is empty. Type some code before running.',
+        status: 'Error',
+        exitCode: 1,
+        timeMs: null,
+        memoryKb: null,
+      });
+      return;
+    }
 
     setIsCompiling(true);
     setCompileResult(null);
@@ -115,11 +128,19 @@ export default function SessionPage() {
         token: accessToken,
       });
       setCompileResult(result);
-      trackCompile(language, code.length, result.status);
+      if (!isInterviewer) {
+        trackCompile(language, code.length, result.status);
+      }
     } catch (err) {
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Compilation failed';
       setCompileResult({
         stdout: null,
-        stderr: err instanceof Error ? err.message : 'Compilation failed',
+        stderr: message,
         status: 'Error',
         exitCode: 1,
         timeMs: null,
@@ -128,7 +149,16 @@ export default function SessionPage() {
     } finally {
       setIsCompiling(false);
     }
-  }, [id, accessToken, language, isCompiling, getCurrentCode, permissions.allowRunCode, trackCompile]);
+  }, [
+    id,
+    accessToken,
+    language,
+    isCompiling,
+    getCurrentCode,
+    permissions.allowRunCode,
+    trackCompile,
+    isInterviewer,
+  ]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -265,6 +295,7 @@ export default function SessionPage() {
           {/* Editor */}
           <div className="flex-1 min-h-0">
             <MonacoEditor
+              ref={editorRef}
               language={currentLang?.monacoId || 'javascript'}
               defaultValue={defaultCode}
               yjsState={yjsState}

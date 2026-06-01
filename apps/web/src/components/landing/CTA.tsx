@@ -1,8 +1,10 @@
 import { motion } from 'framer-motion';
 import { ArrowRight } from 'lucide-react';
 import Button from '@/components/ui/Button';
+import { useLandingNav } from '@/hooks/useLandingNav';
 
 export default function CTA() {
+  const { startFree } = useLandingNav();
   return (
     <section className="relative py-32 px-6">
       <motion.div
@@ -28,7 +30,7 @@ export default function CTA() {
           </p>
 
           <div className="mt-10 flex flex-col sm:flex-row gap-4 justify-center">
-            <Button size="lg" className="group">
+            <Button size="lg" className="group" to={startFree}>
               Start Free — No Credit Card
               <ArrowRight className="ml-2 w-4 h-4 group-hover:translate-x-1 transition-transform" />
             </Button>

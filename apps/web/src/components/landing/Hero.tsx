@@ -1,9 +1,11 @@
 import { motion } from 'framer-motion';
 import { ArrowRight, Play } from 'lucide-react';
 import Button from '@/components/ui/Button';
+import { useLandingNav } from '@/hooks/useLandingNav';
 import CodeEditorMockup from './CodeEditorMockup';
 
 export default function Hero() {
+  const { startFree } = useLandingNav();
   return (
     <section className="relative min-h-screen flex flex-col items-center justify-center px-6 pt-24 pb-16 overflow-hidden">
       {/* Hero glow */}
@@ -53,11 +55,11 @@ export default function Hero() {
         transition={{ duration: 0.6, delay: 0.3 }}
         className="mt-10 flex flex-col sm:flex-row gap-4"
       >
-        <Button size="lg" className="group">
+        <Button size="lg" className="group" to={startFree}>
           Start Free
           <ArrowRight className="ml-2 w-4 h-4 group-hover:translate-x-1 transition-transform" />
         </Button>
-        <Button variant="secondary" size="lg" className="group">
+        <Button variant="secondary" size="lg" className="group" to="#how-it-works">
           <Play className="mr-2 w-4 h-4" />
           Watch Demo
         </Button>

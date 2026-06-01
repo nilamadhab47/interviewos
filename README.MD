@@ -342,8 +342,8 @@ The Vite dev server proxies `/api`, `/socket.io`, and `/yjs` to the API server.
 ### Editor sync may briefly show "Syncing" on initial connect
 The Yjs WebSocket server handles Node.js `Buffer` objects which use a pooled `ArrayBuffer`. The fix (`data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)`) is applied but needs verification under load. If sync stalls, check the `conn.on('message')` handler in `apps/api/src/yjs/server.ts`.
 
-### Judge0 code execution may fail if containers aren't healthy
-Judge0 workers require `privileged: true` in Docker for sandbox filesystem access. After `docker compose up`, wait ~30 seconds for Judge0 to initialize before running code. Check `docker compose logs judge0-server` if compilation times out.
+### Judge0 code execution on Docker Desktop (macOS/Windows)
+The stock `judge0/judge0` image fails on cgroup v2 hosts (`No such file or directory @ rb_sysopen - /box/script.py`). This repo uses `mrkushalsm/judge0:latest` with cgroup mounts instead. After `docker compose up`, wait ~30 seconds before running code. Check `docker compose logs judge0-workers` if runs fail.
 
 ### No 404/error pages in frontend
 Unknown routes render a blank page. React Router has no catch-all route defined.
@@ -408,8 +408,8 @@ Login and register endpoints have no brute-force protection. Add rate limiting b
 |---------|-------|------|---------|
 | `postgres` | `postgres:16-alpine` | 5433 → 5432 | Main application database |
 | `redis` | `redis:7-alpine` | 6379 | Cache, rate limiting, Socket.IO adapter |
-| `judge0-server` | `judge0/judge0:1.13.1` | 2358 | Code execution API |
-| `judge0-workers` | `judge0/judge0:1.13.1` | — | Code execution workers (privileged) |
+| `judge0-server` | `mrkushalsm/judge0:latest` | 2358 | Code execution API (cgroup v2 compatible) |
+| `judge0-workers` | `mrkushalsm/judge0:latest` | — | Code execution workers (privileged) |
 | `judge0-db` | `postgres:16-alpine` | — | Judge0 internal database |
 | `judge0-redis` | `redis:7-alpine` | — | Judge0 internal queue |
 | `livekit` | `livekit/livekit-server:latest` | 7880, 7881, 50000-50060/udp | Video/audio WebRTC server |
