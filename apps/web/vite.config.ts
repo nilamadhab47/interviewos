@@ -27,6 +27,18 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        configure: (proxy) => {
+          // Rewrite Set-Cookie so refresh tokens work on localhost (Vite dev proxy)
+          proxy.on('proxyRes', (proxyRes) => {
+            const cookies = proxyRes.headers['set-cookie'];
+            if (!cookies) return;
+            proxyRes.headers['set-cookie'] = cookies.map((cookie) =>
+              cookie
+                .replace(/; Secure/gi, '')
+                .replace(/; SameSite=None/gi, '; SameSite=Lax'),
+            );
+          });
+        },
       },
       '/socket.io': {
         target: 'http://localhost:8000',

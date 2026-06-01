@@ -12,9 +12,13 @@ export async function saveSnapshot(input: {
   participantId?: string;
   language: string;
   trigger: 'periodic' | 'compile' | 'end';
+  /** When Yjs is not connected on the server yet, client can send editor text. */
+  code?: string;
 }) {
-  const code = getDocText(input.sessionId);
-  if (code === null) return null; // no active doc for this session
+  const fromClient = input.code?.trim();
+  const fromYjs = getDocText(input.sessionId);
+  const code = fromClient || fromYjs;
+  if (!code?.trim()) return null;
 
   const [snapshot] = await db
     .insert(codeSnapshots)

@@ -182,6 +182,30 @@ export async function loginUser(input: { email: string; password: string }) {
   };
 }
 
+export async function getUserProfile(userId: string) {
+  const [user] = await db
+    .select({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      orgId: users.orgId,
+      role: users.role,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+
+  if (!user) return null;
+
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    orgId: user.orgId ?? '',
+    role: user.role,
+  };
+}
+
 export async function refreshAccessToken(oldRefreshToken: string) {
   // Find all non-revoked, non-expired refresh tokens
   const tokens = await db

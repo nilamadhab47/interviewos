@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import {
   FileText,
   ChevronDown,
@@ -9,17 +10,8 @@ import {
   Tag,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-
-interface Question {
-  id: string;
-  title: string;
-  description: string;
-  difficulty: string;
-  defaultCode: Record<string, string>;
-  testCases: Array<{ input: string; expected: string }>;
-  tags: string[];
-  isPublic: boolean;
-}
+import type { Question } from '@/types/question';
+import { difficultyBadgeClass } from '@/types/question';
 
 interface QuestionPanelProps {
   sessionId: string;
@@ -29,12 +21,6 @@ interface QuestionPanelProps {
   language: string;
   onQuestionSelected?: (question: Question) => void;
 }
-
-const difficultyColors: Record<string, string> = {
-  easy: 'text-emerald-400 bg-emerald-400/10',
-  medium: 'text-amber-400 bg-amber-400/10',
-  hard: 'text-red-400 bg-red-400/10',
-};
 
 export default function QuestionPanel({
   sessionId,
@@ -84,10 +70,22 @@ export default function QuestionPanel({
       q.tags.some((t) => t.toLowerCase().includes(searchTerm.toLowerCase())),
   );
 
-  function handleSelect(question: Question) {
+  async function handleSelect(question: Question) {
     setSelectedQuestion(question);
     setShowPicker(false);
     onQuestionSelected?.(question);
+
+    if (isInterviewer) {
+      try {
+        await api(`/api/sessions/${sessionId}/question`, {
+          method: 'PATCH',
+          body: { questionId: question.id },
+          token: accessToken,
+        });
+      } catch (err) {
+        console.error('[Question] Failed to attach question:', err);
+      }
+    }
   }
 
   return (
@@ -115,7 +113,7 @@ export default function QuestionPanel({
                   <h4 className="text-sm font-medium">{selectedQuestion.title}</h4>
                   <span
                     className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold mt-1 ${
-                      difficultyColors[selectedQuestion.difficulty] || 'text-text-muted bg-bg-card'
+                      difficultyBadgeClass[selectedQuestion.difficulty] || 'text-text-muted bg-bg-card'
                     }`}
                   >
                     {selectedQuestion.difficulty.charAt(0).toUpperCase() +
@@ -220,6 +218,14 @@ export default function QuestionPanel({
                           ? 'No questions in your bank yet'
                           : 'No matching questions'}
                       </p>
+                      {questions.length === 0 && (
+                        <Link
+                          to="/dashboard/questions/new"
+                          className="inline-block mt-3 text-xs text-accent-glow hover:underline"
+                        >
+                          Add a question to your bank
+                        </Link>
+                      )}
                     </div>
                   ) : (
                     <div className="space-y-1">
@@ -237,7 +243,7 @@ export default function QuestionPanel({
                             <span className="text-sm font-medium flex-1">{q.title}</span>
                             <span
                               className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                                difficultyColors[q.difficulty] || ''
+                                difficultyBadgeClass[q.difficulty] || ''
                               }`}
                             >
                               {q.difficulty}

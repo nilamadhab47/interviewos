@@ -11,6 +11,7 @@ interface SessionState {
     input: {
       title?: string;
       language?: string;
+      questionId?: string;
       candidateName?: string;
       candidateEmail?: string;
     },
@@ -47,7 +48,7 @@ export const useSessionStore = create<SessionState>((set) => ({
       set({ isLoading: false });
       return data;
     } catch (err) {
-      set({ error: 'Failed to create session', isLoading: false });
+      set({ error: 'Failed to schedule interview', isLoading: false });
       throw err;
     }
   },

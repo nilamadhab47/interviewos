@@ -2,7 +2,7 @@ import { useAuthStore } from '@/stores/authStore';
 
 /** Routes for landing-page CTAs */
 export function useLandingNav() {
-  const isLoggedIn = useAuthStore((s) => Boolean(s.accessToken && s.user));
+  const isLoggedIn = useAuthStore((s) => s.isUserAuthenticated());
 
   return {
     login: '/login',

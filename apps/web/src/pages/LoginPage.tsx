@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Code2, LogIn } from 'lucide-react';
 import Button from '@/components/ui/Button';
@@ -8,7 +8,9 @@ import { useAuthStore } from '@/stores/authStore';
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { login, isLoading, error, clearError } = useAuthStore();
+  const from = (location.state as { from?: string } | null)?.from ?? '/dashboard';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
@@ -16,7 +18,7 @@ export default function LoginPage() {
     e.preventDefault();
     try {
       await login({ email, password });
-      navigate('/dashboard');
+      navigate(from, { replace: true });
     } catch {
       // Error is set in store
     }

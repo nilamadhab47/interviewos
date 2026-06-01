@@ -5,3 +5,5 @@ export * from './types/socket-events';
 export * from './constants/languages';
 export * from './constants/actions';
 export * from './validation/session.schema';
+export * from './utils/starterCode';
+export type { QuestionStarterSource } from './utils/starterCode';

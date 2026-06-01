@@ -1,6 +1,11 @@
 import { Router } from 'express';
 import { registerSchema, loginSchema } from '@interviewos/shared';
-import { registerUser, loginUser, refreshAccessToken } from '../services/auth.service';
+import {
+  registerUser,
+  loginUser,
+  refreshAccessToken,
+  getUserProfile,
+} from '../services/auth.service';
 import { requireAuth } from '../middleware/auth.middleware';
 
 export const authRouter = Router();
@@ -76,7 +81,16 @@ authRouter.post('/logout', (_req, res) => {
   res.json({ message: 'Logged out' });
 });
 
-// GET /api/auth/me — Get current user
-authRouter.get('/me', requireAuth, (req, res) => {
-  res.json({ user: req.user });
+// GET /api/auth/me — Current user profile (validates access JWT)
+authRouter.get('/me', requireAuth, async (req, res) => {
+  try {
+    const profile = await getUserProfile(req.user!.userId);
+    if (!profile) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    res.json({ user: profile });
+  } catch {
+    res.status(500).json({ error: 'Failed to load profile' });
+  }
 });

@@ -214,3 +214,19 @@ export async function updateSessionPermissions(
 
   return updated;
 }
+
+export async function updateSessionQuestion(
+  sessionId: string,
+  questionId: string | null,
+) {
+  const [updated] = await db
+    .update(sessions)
+    .set({
+      questionId: questionId ?? null,
+      updatedAt: new Date(),
+    })
+    .where(eq(sessions.id, sessionId))
+    .returning();
+
+  return updated;
+}

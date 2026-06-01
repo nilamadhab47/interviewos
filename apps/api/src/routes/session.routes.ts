@@ -8,7 +8,10 @@ import {
   joinByToken,
   updateSessionStatus,
   updateSessionPermissions,
+  updateSessionQuestion,
 } from '../services/session.service';
+import { saveSnapshot } from '../services/snapshot.service';
+import { getEditorBootstrap } from '../services/editor-bootstrap.service';
 
 export const sessionRouter = Router();
 
@@ -41,6 +44,16 @@ sessionRouter.post('/', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/sessions/:id/editor-code — Starter / saved code for the editor (refresh fallback)
+sessionRouter.get('/:id/editor-code', requireAuth, async (req, res) => {
+  try {
+    const bootstrap = await getEditorBootstrap(req.params.id);
+    res.json(bootstrap);
+  } catch {
+    res.status(500).json({ error: 'Failed to load editor code' });
+  }
+});
+
 // GET /api/sessions/:id — Get session details
 sessionRouter.get('/:id', requireAuth, async (req, res) => {
   try {
@@ -69,6 +82,25 @@ sessionRouter.get('/join/:token', async (req, res) => {
   }
 });
 
+// PATCH /api/sessions/:id/question — Attach or change coding question
+sessionRouter.patch('/:id/question', requireAuth, async (req, res) => {
+  try {
+    const { questionId } = req.body as { questionId?: string | null };
+    if (questionId !== null && questionId !== undefined && typeof questionId !== 'string') {
+      res.status(400).json({ error: 'Invalid questionId' });
+      return;
+    }
+    const updated = await updateSessionQuestion(req.params.id, questionId ?? null);
+    if (!updated) {
+      res.status(404).json({ error: 'Interview not found' });
+      return;
+    }
+    res.json(updated);
+  } catch {
+    res.status(500).json({ error: 'Failed to update question' });
+  }
+});
+
 // PATCH /api/sessions/:id/permissions — Update session permissions
 sessionRouter.patch('/:id/permissions', requireAuth, async (req, res) => {
   try {
@@ -80,6 +112,26 @@ sessionRouter.patch('/:id/permissions', requireAuth, async (req, res) => {
     res.json(updated);
   } catch (err: unknown) {
     res.status(500).json({ error: 'Failed to update permissions' });
+  }
+});
+
+// POST /api/sessions/:id/snapshot — Persist current editor content from Yjs
+sessionRouter.post('/:id/snapshot', requireAuth, async (req, res) => {
+  try {
+    const { language, code } = req.body as { language?: string; code?: string };
+    const snapshot = await saveSnapshot({
+      sessionId: req.params.id,
+      language: language || 'javascript',
+      trigger: 'periodic',
+      code,
+    });
+    if (!snapshot) {
+      res.status(204).end();
+      return;
+    }
+    res.json(snapshot);
+  } catch {
+    res.status(500).json({ error: 'Failed to save snapshot' });
   }
 });
 

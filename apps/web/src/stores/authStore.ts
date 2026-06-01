@@ -1,7 +1,19 @@
 import { create } from 'zustand';
-import { api, ApiError } from '@/lib/api';
+import { api, ApiError, setAuthTokenGetter, tryRefreshSession } from '@/lib/api';
+import {
+  saveUserAuth,
+  loadUserAuth,
+  clearUserAuth,
+  saveSessionAuth,
+  loadSessionAuth,
+  clearAllAuthStorage,
+  hasAccountHint,
+  type StoredUser,
+} from '@/lib/authStorage';
 
-interface User {
+export type AuthMode = 'user' | 'session' | null;
+
+export interface User {
   id: string;
   email: string;
   name: string;
@@ -12,90 +24,222 @@ interface User {
 interface AuthState {
   user: User | null;
   accessToken: string | null;
+  authMode: AuthMode;
   isLoading: boolean;
+  isInitialized: boolean;
   error: string | null;
 
+  initializeAuth: () => Promise<void>;
   register: (input: {
     email: string;
     password: string;
     name: string;
     orgName: string;
   }) => Promise<void>;
-
   login: (input: { email: string; password: string }) => Promise<void>;
-
   logout: () => Promise<void>;
-
-  refreshToken: () => Promise<void>;
-
-  setSessionAuth: (token: string, participant: { id: string; name: string; role: string }, sessionId: string) => void;
-
+  refreshToken: () => Promise<boolean>;
+  setSessionAuth: (
+    token: string,
+    participant: { id: string; name: string; role: string },
+    sessionId: string,
+  ) => void;
   clearError: () => void;
+  isUserAuthenticated: () => boolean;
+  isInterviewAuthenticated: () => boolean;
 }
 
-export const useAuthStore = create<AuthState>((set, get) => ({
-  user: null,
-  accessToken: null,
-  isLoading: false,
-  error: null,
+function toUser(u: StoredUser): User {
+  return {
+    id: u.id,
+    email: u.email,
+    name: u.name,
+    orgId: u.orgId ?? '',
+    role: u.role,
+  };
+}
 
-  register: async (input) => {
-    set({ isLoading: true, error: null });
-    try {
-      const data = await api<{ user: User; accessToken: string }>(
-        '/api/auth/register',
-        { method: 'POST', body: input },
-      );
-      set({ user: data.user, accessToken: data.accessToken, isLoading: false });
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : 'Registration failed';
-      set({ error: message, isLoading: false });
-      throw err;
-    }
-  },
+function sessionUserToUser(participant: { id: string; name: string; role: string }): User {
+  return {
+    id: participant.id,
+    email: '',
+    name: participant.name,
+    orgId: '',
+    role: participant.role,
+  };
+}
 
-  login: async (input) => {
-    set({ isLoading: true, error: null });
-    try {
-      const data = await api<{ user: User; accessToken: string }>(
-        '/api/auth/login',
-        { method: 'POST', body: input },
-      );
-      set({ user: data.user, accessToken: data.accessToken, isLoading: false });
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : 'Login failed';
-      set({ error: message, isLoading: false });
-      throw err;
-    }
-  },
+function applyUserAuth(
+  set: (partial: Partial<AuthState>) => void,
+  accessToken: string,
+  user: User,
+) {
+  saveUserAuth(accessToken, {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    orgId: user.orgId,
+    role: user.role,
+  });
+  set({
+    user,
+    accessToken,
+    authMode: 'user',
+    error: null,
+  });
+}
 
-  logout: async () => {
-    try {
-      await api('/api/auth/logout', { method: 'POST' });
-    } catch {
-      // Ignore logout errors
-    }
-    set({ user: null, accessToken: null });
-  },
+export const useAuthStore = create<AuthState>((set, get) => {
+  setAuthTokenGetter(() => get().accessToken);
 
-  refreshToken: async () => {
-    try {
-      const data = await api<{ user: User; accessToken: string }>(
-        '/api/auth/refresh',
-        { method: 'POST' },
-      );
-      set({ user: data.user, accessToken: data.accessToken });
-    } catch {
-      set({ user: null, accessToken: null });
-    }
-  },
+  return {
+    user: null,
+    accessToken: null,
+    authMode: null,
+    isLoading: false,
+    isInitialized: false,
+    error: null,
 
-  setSessionAuth: (token, participant, sessionId) => {
-    set({
-      accessToken: token,
-      user: { id: participant.id, email: '', name: participant.name, orgId: '', role: participant.role },
-    });
-  },
+    isUserAuthenticated: () => {
+      const { authMode, accessToken, user } = get();
+      return authMode === 'user' && Boolean(accessToken && user?.email);
+    },
 
-  clearError: () => set({ error: null }),
-}));
+    isInterviewAuthenticated: () => {
+      const { accessToken, user } = get();
+      return Boolean(accessToken && user);
+    },
+
+    initializeAuth: async () => {
+      if (get().isInitialized) return;
+
+      set({ isLoading: true });
+
+      const stored = loadUserAuth();
+
+      // 1. Valid access token in localStorage (common case right after login / quick reload)
+      if (stored.accessToken && stored.user) {
+        try {
+          const { user } = await api<{ user: User }>('/api/auth/me', {
+            token: stored.accessToken,
+            skipAuthRetry: true,
+          });
+          applyUserAuth(set, stored.accessToken, user);
+          set({ isInitialized: true, isLoading: false });
+          return;
+        } catch {
+          // Access token expired — try refresh cookie below
+        }
+      }
+
+      // 2. HttpOnly refresh cookie (only if user has logged in before — avoids 401 noise for guests)
+      if (hasAccountHint()) {
+        const refreshed = await tryRefreshSession();
+        if (refreshed) {
+          applyUserAuth(set, refreshed.accessToken, refreshed.user);
+          set({ isInitialized: true, isLoading: false });
+          return;
+        }
+        clearUserAuth();
+      }
+
+      // 3. Restore interview join session (candidate / guest link)
+      const sessionStored = loadSessionAuth();
+      if (sessionStored.accessToken && sessionStored.user) {
+        set({
+          accessToken: sessionStored.accessToken,
+          user: sessionUserToUser(sessionStored.user),
+          authMode: 'session',
+          error: null,
+        });
+        set({ isInitialized: true, isLoading: false });
+        return;
+      }
+
+      set({
+        user: null,
+        accessToken: null,
+        authMode: null,
+        isInitialized: true,
+        isLoading: false,
+      });
+    },
+
+    register: async (input) => {
+      set({ isLoading: true, error: null });
+      try {
+        const data = await api<{ user: User; accessToken: string }>(
+          '/api/auth/register',
+          { method: 'POST', body: input },
+        );
+        applyUserAuth(set, data.accessToken, data.user);
+        set({ isLoading: false });
+      } catch (err) {
+        const message = err instanceof ApiError ? err.message : 'Registration failed';
+        set({ error: message, isLoading: false });
+        throw err;
+      }
+    },
+
+    login: async (input) => {
+      set({ isLoading: true, error: null });
+      try {
+        const data = await api<{ user: User; accessToken: string }>(
+          '/api/auth/login',
+          { method: 'POST', body: input },
+        );
+        applyUserAuth(set, data.accessToken, data.user);
+        set({ isLoading: false });
+      } catch (err) {
+        const message = err instanceof ApiError ? err.message : 'Login failed';
+        set({ error: message, isLoading: false });
+        throw err;
+      }
+    },
+
+    logout: async () => {
+      set({ isLoading: true });
+      try {
+        if (get().authMode === 'user') {
+          await api('/api/auth/logout', { method: 'POST' });
+        }
+      } catch {
+        // ignore
+      }
+      clearAllAuthStorage();
+      set({
+        user: null,
+        accessToken: null,
+        authMode: null,
+        isLoading: false,
+        error: null,
+      });
+    },
+
+    refreshToken: async () => {
+      const data = await tryRefreshSession();
+      if (!data) {
+        return false;
+      }
+      applyUserAuth(set, data.accessToken, data.user);
+      return true;
+    },
+
+    setSessionAuth: (token, participant, _sessionId) => {
+      clearUserAuth();
+      saveSessionAuth(token, {
+        id: participant.id,
+        name: participant.name,
+        role: participant.role,
+      });
+      set({
+        accessToken: token,
+        user: sessionUserToUser(participant),
+        authMode: 'session',
+        error: null,
+      });
+    },
+
+    clearError: () => set({ error: null }),
+  };
+});

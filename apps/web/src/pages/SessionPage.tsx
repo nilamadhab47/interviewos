@@ -16,6 +16,8 @@ import { useTelemetry } from '@/hooks/useTelemetry';
 import { useAntiCheat } from '@/hooks/useAntiCheat';
 import { connectSocket } from '@/lib/socket';
 import { api, ApiError } from '@/lib/api';
+import { resolveStarterCode } from '@/lib/questionCode';
+import type { Question } from '@/types/question';
 
 interface CompileResult {
   stdout: string | null;
@@ -31,8 +33,10 @@ export default function SessionPage() {
   const { user, accessToken } = useAuthStore();
   const { session, fetchSession } = useSessionStore();
   const editorRef = useRef<MonacoEditorHandle>(null);
+  const lastAppliedQuestionKey = useRef<string | null>(null);
 
   const [language, setLanguage] = useState('javascript');
+  const [attachedQuestion, setAttachedQuestion] = useState<Question | null>(null);
   const [compileResult, setCompileResult] = useState<CompileResult | null>(null);
   const [isCompiling, setIsCompiling] = useState(false);
   const [showLangDropdown, setShowLangDropdown] = useState(false);
@@ -65,8 +69,21 @@ export default function SessionPage() {
     }
   }, [session]);
 
+  // Load question when interview was scheduled with one attached
+  useEffect(() => {
+    if (!session?.questionId || !accessToken) {
+      setAttachedQuestion(null);
+      lastAppliedQuestionKey.current = null;
+      return;
+    }
+
+    api<Question>(`/api/questions/${session.questionId}`, { token: accessToken })
+      .then(setAttachedQuestion)
+      .catch(() => setAttachedQuestion(null));
+  }, [session?.questionId, accessToken]);
+
   const currentLang = getLanguageById(language);
-  const defaultCode = currentLang?.defaultCode || '';
+  const editorStarterCode = resolveStarterCode(attachedQuestion, language);
   const isInterviewer = session?.participants?.some(
     (p) => p.userId === user?.id && p.role === 'interviewer',
   ) ?? false;
@@ -91,6 +108,145 @@ export default function SessionPage() {
 
   // Anti-cheat — enforces permissions on client side
   useAntiCheat({ permissions });
+
+  const applyEditorCode = useCallback(
+    (code: string, options?: { force?: boolean; onlyIfEmpty?: boolean }) => {
+      if (!code.trim()) return false;
+
+      const current =
+        yjsState?.ytext?.toString() ?? editorRef.current?.getValue() ?? '';
+      if (options?.onlyIfEmpty !== false && !options?.force && current.trim()) {
+        return false;
+      }
+
+      if (yjsState) {
+        yjsState.ydoc.transact(() => {
+          const len = yjsState.ytext.length;
+          if (len > 0) yjsState.ytext.delete(0, len);
+          yjsState.ytext.insert(0, code);
+        });
+      }
+
+      editorRef.current?.setValue(code);
+      return true;
+    },
+    [yjsState],
+  );
+
+  const applyQuestionStarterCode = useCallback(
+    (question: Question, lang: string, options?: { force?: boolean; onlyIfEmpty?: boolean }) => {
+      const code = resolveStarterCode(question, lang);
+      const key = `${question.id}:${lang}`;
+      if (!options?.force && lastAppliedQuestionKey.current === key) return false;
+
+      const applied = applyEditorCode(code, options);
+      if (applied) {
+        lastAppliedQuestionKey.current = key;
+      }
+      return applied;
+    },
+    [applyEditorCode],
+  );
+
+  const persistEditorSnapshot = useCallback(
+    (lang: string) => {
+      if (!id || !accessToken) return;
+      const code =
+        editorRef.current?.getValue() ?? yjsState?.ytext?.toString() ?? '';
+      if (!code.trim()) return;
+
+      api(`/api/sessions/${id}/snapshot`, {
+        method: 'POST',
+        body: { language: lang, code },
+        token: accessToken,
+      }).catch(() => {
+        // non-blocking
+      });
+    },
+    [id, accessToken, yjsState?.ytext],
+  );
+
+  // Load editor code from API (snapshot → question starter) — works on refresh even if Yjs is reconnecting
+  useEffect(() => {
+    if (!id || !accessToken || !session) return;
+
+    let cancelled = false;
+
+    async function bootstrapEditor() {
+      const current =
+        yjsState?.ytext?.toString() ?? editorRef.current?.getValue() ?? '';
+      if (current.trim()) return;
+
+      try {
+        const { code } = await api<{ code: string; source: string }>(
+          `/api/sessions/${id}/editor-code`,
+          { token: accessToken },
+        );
+        if (cancelled || !code?.trim()) return;
+
+        if (applyEditorCode(code, { onlyIfEmpty: true })) {
+          persistEditorSnapshot(language);
+        }
+      } catch {
+        if (attachedQuestion && !cancelled) {
+          applyQuestionStarterCode(attachedQuestion, language, { onlyIfEmpty: true });
+        }
+      }
+    }
+
+    const t1 = window.setTimeout(bootstrapEditor, 300);
+    const t2 = window.setTimeout(bootstrapEditor, 1200);
+    const t3 = window.setTimeout(bootstrapEditor, 2500);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearTimeout(t3);
+    };
+  }, [
+    id,
+    accessToken,
+    session,
+    language,
+    attachedQuestion,
+    yjsState,
+    applyEditorCode,
+    applyQuestionStarterCode,
+    persistEditorSnapshot,
+  ]);
+
+  // Apply question starter when attached (don't wait for Yjs sync)
+  useEffect(() => {
+    if (!attachedQuestion) return;
+
+    const run = () => {
+      const applied = applyQuestionStarterCode(attachedQuestion, language, {
+        onlyIfEmpty: true,
+      });
+      if (applied) {
+        persistEditorSnapshot(language);
+      }
+    };
+
+    run();
+    const t1 = window.setTimeout(run, 100);
+    const t2 = window.setTimeout(run, 600);
+
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, [attachedQuestion, language, applyQuestionStarterCode, persistEditorSnapshot]);
+
+  const handleQuestionSelected = useCallback(
+    (question: Question) => {
+      setAttachedQuestion(question);
+      applyQuestionStarterCode(question, language, { force: true });
+      persistEditorSnapshot(language);
+    },
+    [language, applyQuestionStarterCode, persistEditorSnapshot],
+  );
 
   const getCurrentCode = useCallback((): string => {
     const fromEditor = editorRef.current?.getValue();
@@ -297,7 +453,7 @@ export default function SessionPage() {
             <MonacoEditor
               ref={editorRef}
               language={currentLang?.monacoId || 'javascript'}
-              defaultValue={defaultCode}
+              seedCode={editorStarterCode}
               yjsState={yjsState}
             />
           </div>
@@ -333,6 +489,7 @@ export default function SessionPage() {
                   language={language}
                   permissions={permissions}
                   onPermissionsChanged={setPermissions}
+                  onQuestionSelected={handleQuestionSelected}
                 />
               </div>
             )}

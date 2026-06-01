@@ -3,6 +3,7 @@ import { useState } from 'react';
 import Button from '@/components/ui/Button';
 import InterviewerControls from './InterviewerControls';
 import QuestionPanel from './QuestionPanel';
+import type { Question } from '@/types/question';
 import TelemetryDashboard from '@/components/telemetry/TelemetryDashboard';
 import type { SessionPermissions } from '@interviewos/shared';
 
@@ -27,6 +28,7 @@ interface SidebarProps {
   onStartSession?: () => void;
   onEndSession?: () => void;
   onPermissionsChanged?: (permissions: SessionPermissions) => void;
+  onQuestionSelected?: (question: Question) => void;
 }
 
 const DEFAULT_PERMISSIONS: SessionPermissions = {
@@ -50,6 +52,7 @@ export default function Sidebar({
   onStartSession,
   onEndSession,
   onPermissionsChanged,
+  onQuestionSelected,
 }: SidebarProps) {
   const [copied, setCopied] = useState(false);
 
@@ -73,7 +76,7 @@ export default function Sidebar({
       {/* Session info */}
       <div className="p-4 border-b border-border">
         <h3 className="text-sm font-semibold truncate">
-          {sessionTitle || 'Interview Session'}
+          {sessionTitle || 'Interview'}
         </h3>
         <div className={`flex items-center gap-1.5 mt-1 text-xs ${statusColors[sessionStatus] || 'text-text-muted'}`}>
           <Circle className="w-2 h-2 fill-current" />
@@ -108,6 +111,7 @@ export default function Sidebar({
           currentQuestionId={currentQuestionId}
           isInterviewer={isInterviewer}
           language={language}
+          onQuestionSelected={onQuestionSelected}
         />
 
         {/* Telemetry dashboard — interviewer only */}

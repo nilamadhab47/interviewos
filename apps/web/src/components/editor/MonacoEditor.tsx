@@ -6,11 +6,14 @@ import type { YjsState } from '@/hooks/useYjs';
 
 export interface MonacoEditorHandle {
   getValue: () => string;
+  /** Replace editor + Yjs document content (syncs to all participants). */
+  setValue: (code: string) => void;
 }
 
 interface MonacoEditorProps {
   language: string;
-  defaultValue?: string;
+  /** Initial / question seed text for empty collaborative docs */
+  seedCode?: string;
   onChange?: (value: string) => void;
   readOnly?: boolean;
   yjsState?: YjsState | null;
@@ -18,7 +21,7 @@ interface MonacoEditorProps {
 
 const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(function MonacoEditor({
   language,
-  defaultValue = '',
+  seedCode = '',
   onChange,
   readOnly = false,
   yjsState,
@@ -28,13 +31,34 @@ const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(function 
   // Track which provider we've bound to, so we skip re-binding on status-only changes
   const boundProviderRef = useRef<unknown>(null);
 
-  useImperativeHandle(ref, () => ({
-    getValue: () => {
-      const fromEditor = editorRef.current?.getValue();
-      if (fromEditor !== undefined && fromEditor !== '') return fromEditor;
-      return yjsState?.ytext?.toString() || '';
-    },
-  }), [yjsState?.ytext]);
+  useImperativeHandle(
+    ref,
+    () => ({
+      getValue: () => {
+        const fromEditor = editorRef.current?.getValue();
+        if (fromEditor !== undefined && fromEditor !== '') return fromEditor;
+        return yjsState?.ytext?.toString() || '';
+      },
+      setValue: (code: string) => {
+        if (yjsState) {
+          yjsState.ydoc.transact(() => {
+            const len = yjsState.ytext.length;
+            if (len > 0) {
+              yjsState.ytext.delete(0, len);
+            }
+            if (code) {
+              yjsState.ytext.insert(0, code);
+            }
+          });
+        }
+        const model = editorRef.current?.getModel();
+        if (model && model.getValue() !== code) {
+          editorRef.current?.setValue(code);
+        }
+      },
+    }),
+    [yjsState],
+  );
 
   const handleMount: OnMount = useCallback(
     (editorInstance) => {
@@ -79,6 +103,27 @@ const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(function 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProvider]);
 
+  function seedYjsIfEmpty(
+    yjs: YjsState,
+    editorInstance: editor.IStandaloneCodeEditor,
+    code: string,
+  ) {
+    if (!code || yjs.ytext.length > 0) return;
+    yjs.ydoc.transact(() => {
+      yjs.ytext.insert(0, code);
+    });
+    if (editorInstance.getValue() !== code) {
+      editorInstance.setValue(code);
+    }
+  }
+
+  // Re-seed when question loads after Yjs sync (page refresh race)
+  useEffect(() => {
+    if (!yjsState?.isSynced || !seedCode || !editorRef.current) return;
+    seedYjsIfEmpty(yjsState, editorRef.current, seedCode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedCode, yjsState?.isSynced, yjsState?.provider]);
+
   function createBinding(
     editorInstance: editor.IStandaloneCodeEditor,
     yjs: YjsState,
@@ -86,12 +131,7 @@ const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(function 
     // Clean up old binding
     bindingRef.current?.destroy();
 
-    // If the Yjs doc is empty and we have a default value, set it
-    if (yjs.ytext.length === 0 && defaultValue) {
-      yjs.ydoc.transact(() => {
-        yjs.ytext.insert(0, defaultValue);
-      });
-    }
+    seedYjsIfEmpty(yjs, editorInstance, seedCode);
 
     // Create y-monaco binding — this handles:
     // 1. Local edits → Yjs operations
@@ -140,7 +180,7 @@ const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(function 
       <Editor
         height="100%"
         language={language}
-        defaultValue={yjsState ? undefined : defaultValue}
+        defaultValue={yjsState ? undefined : seedCode}
         onChange={handleChange}
         onMount={handleMount}
         theme="vs-dark"

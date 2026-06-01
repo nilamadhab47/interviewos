@@ -6,6 +6,7 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
+import { hydrateYjsDocument } from '../services/yjs-hydrate.service';
 
 const MSG_SYNC = 0;
 const MSG_AWARENESS = 1;
@@ -18,6 +19,21 @@ const docs = new Map<string, {
   awareness: awarenessProtocol.Awareness;
   conns: Map<WebSocket, Set<number>>;
 }>();
+
+const hydrationScheduled = new Set<string>();
+
+function scheduleRoomHydration(roomName: string, doc: Y.Doc) {
+  if (hydrationScheduled.has(roomName)) return;
+  hydrationScheduled.add(roomName);
+
+  void hydrateYjsDocument(roomName, doc)
+    .catch((err) => {
+      console.error(`[Yjs] Hydration failed for room ${roomName}:`, err);
+    })
+    .finally(() => {
+      hydrationScheduled.delete(roomName);
+    });
+}
 
 function getOrCreateDoc(roomName: string) {
   let room = docs.get(roomName);
@@ -51,6 +67,7 @@ function getOrCreateDoc(roomName: string) {
 
     room = { doc, awareness, conns: new Map() };
     docs.set(roomName, room);
+    scheduleRoomHydration(roomName, doc);
   }
   return room;
 }
