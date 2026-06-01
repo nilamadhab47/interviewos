@@ -10,7 +10,15 @@ import {
   bigserial,
   doublePrecision,
   index,
+  customType,
 } from 'drizzle-orm/pg-core';
+
+/** PostgreSQL bytea — stores Yjs CRDT binary state */
+export const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return 'bytea';
+  },
+});
 
 // ─── Organizations ───
 export const organizations = pgTable('organizations', {
@@ -101,6 +109,17 @@ export const participants = pgTable('participants', {
   joinedAt: timestamp('joined_at', { withTimezone: true }),
   leftAt: timestamp('left_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ─── Yjs Documents (CRDT source of truth for collaborative editor) ───
+export const yjsDocuments = pgTable('yjs_documents', {
+  sessionId: uuid('session_id')
+    .primaryKey()
+    .references(() => sessions.id, { onDelete: 'cascade' }),
+  state: bytea('state').notNull(),
+  language: varchar('language', { length: 30 }).notNull().default('javascript'),
+  initialized: boolean('initialized').notNull().default(false),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 // ─── Code Snapshots ───

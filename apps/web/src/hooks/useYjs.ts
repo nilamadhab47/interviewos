@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import {
   acquireYjsRoom,
   releaseYjsRoom,
@@ -24,7 +24,8 @@ export function useYjs({ roomId, userName, userRole }: UseYjsOptions): YjsRoom |
   userNameRef.current = userName;
   userRoleRef.current = userRole;
 
-  useEffect(() => {
+  // Acquire before paint so the editor never mounts without a Yjs room
+  useLayoutEffect(() => {
     if (!roomId) return;
 
     acquireYjsRoom(

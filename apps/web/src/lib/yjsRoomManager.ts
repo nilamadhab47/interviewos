@@ -202,14 +202,7 @@ export function updateYjsRoomAwareness(
   }
 }
 
+/** Stable room reference — same object until the room is destroyed. */
 export function getYjsRoom(roomId: string): YjsRoom | null {
-  const entry = rooms.get(roomId);
-  if (!entry) return null;
-  return {
-    ydoc: entry.ydoc,
-    provider: entry.provider,
-    ytext: entry.ytext,
-    isConnected: entry.isConnected,
-    isSynced: entry.isSynced,
-  };
+  return rooms.get(roomId) ?? null;
 }

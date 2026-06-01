@@ -186,6 +186,8 @@ export default function QuestionPanel({
   const [selectedQuestion, setSelectedQuestion] = useState<Question | null>(null);
   const [showPicker, setShowPicker] = useState(false);
   const [showFullQuestion, setShowFullQuestion] = useState(false);
+  const [isResettingStarter, setIsResettingStarter] = useState(false);
+  const [resetMessage, setResetMessage] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -244,6 +246,24 @@ export default function QuestionPanel({
       q.tags.some((t) => t.toLowerCase().includes(searchTerm.toLowerCase())),
   );
 
+  async function handleResetStarter() {
+    if (!isInterviewer || !sessionId) return;
+    setIsResettingStarter(true);
+    setResetMessage(null);
+    try {
+      await api(`/api/sessions/${sessionId}/editor/reset-starter`, {
+        method: 'POST',
+        token: accessToken,
+      });
+      setResetMessage('Editor reset to starter code');
+      setTimeout(() => setResetMessage(null), 3000);
+    } catch {
+      setResetMessage('Failed to reset editor');
+    } finally {
+      setIsResettingStarter(false);
+    }
+  }
+
   async function handleSelect(question: Question) {
     setSelectedQuestion(question);
     setShowPicker(false);
@@ -298,16 +318,30 @@ export default function QuestionPanel({
                     </button>
                   )}
                   {isInterviewer && (
-                    <button
-                      type="button"
-                      onClick={() => setShowPicker(true)}
-                      className="text-[11px] text-accent-glow hover:underline text-left"
-                    >
-                      Change
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setShowPicker(true)}
+                        className="text-[11px] text-accent-glow hover:underline text-left"
+                      >
+                        Change
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleResetStarter}
+                        disabled={isResettingStarter}
+                        className="text-[11px] text-amber-400 hover:underline text-left disabled:opacity-50"
+                        title="Replace editor content with question starter for everyone"
+                      >
+                        {isResettingStarter ? 'Resetting…' : 'Reset starter'}
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
+              {resetMessage && (
+                <p className="text-[11px] text-text-muted">{resetMessage}</p>
+              )}
             </div>
           ) : (
             <div className="text-center py-4">

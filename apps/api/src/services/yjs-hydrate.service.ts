@@ -1,35 +1,53 @@
 import * as Y from 'yjs';
-import { resolveStarterCode } from '@interviewos/shared';
-import { getLatestSnapshot } from './snapshot.service';
+import { resolveStarterCode, type QuestionStarterSource } from '@interviewos/shared';
 import { getSession } from './session.service';
 import { getQuestion } from './question.service';
+import {
+  getYjsDocument,
+  isDocPristine,
+  saveYjsDocument,
+  isYjsDocumentInitialized,
+} from './yjs-doc.service';
 
 /**
- * Seed an empty Yjs room from the latest snapshot or the session's question starter code.
- * Runs when a room is first created (e.g. after refresh once the in-memory doc was destroyed).
+ * One-time server-side starter injection when the collaborative doc is still empty.
+ * Returns true if starter code was written.
  */
-export async function hydrateYjsDocument(sessionId: string, doc: Y.Doc): Promise<void> {
-  const ytext = doc.getText('monaco');
-  if (ytext.length > 0) return;
+export async function injectStarterIfPristine(
+  sessionId: string,
+  doc: Y.Doc,
+): Promise<boolean> {
+  if (!isDocPristine(doc)) return false;
 
-  const latest = await getLatestSnapshot(sessionId);
-  if (latest?.code?.trim()) {
-    doc.transact(() => {
-      ytext.insert(0, latest.code);
-    });
-    return;
-  }
+  const alreadyInitialized = await isYjsDocumentInitialized(sessionId);
+  if (alreadyInitialized) return false;
 
   const session = await getSession(sessionId);
-  if (!session?.questionId) return;
+  if (!session?.questionId) return false;
 
   const question = await getQuestion(session.questionId);
-  if (!question) return;
+  if (!question) return false;
 
-  const code = resolveStarterCode(question, session.language);
-  if (!code.trim()) return;
+  const code = resolveStarterCode(question as QuestionStarterSource, session.language);
+  if (!code.trim()) return false;
 
   doc.transact(() => {
-    ytext.insert(0, code);
+    doc.getText('monaco').insert(0, code);
   });
+
+  await saveYjsDocument(sessionId, doc, session.language, { markInitialized: true });
+  return true;
+}
+
+/**
+ * Load persisted CRDT state, then inject starter only when doc is empty and never initialized.
+ */
+export async function hydrateYjsDocument(sessionId: string, doc: Y.Doc): Promise<void> {
+  const stored = await getYjsDocument(sessionId);
+  if (stored?.state.byteLength) {
+    Y.applyUpdate(doc, stored.state);
+    if (!isDocPristine(doc)) return;
+  }
+
+  await injectStarterIfPristine(sessionId, doc);
 }

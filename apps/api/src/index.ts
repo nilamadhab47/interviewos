@@ -68,9 +68,6 @@ const interviewerSockets = new Map<string, string>();
 // Per-session: Map<sessionId, Map<participantId, lastTelemetryTime>>
 const sessionParticipants = new Map<string, Map<string, string>>();
 
-// Track session language for snapshots
-const sessionLanguages = new Map<string, string>();
-
 // Telemetry summary push — every 5s for each active session
 setInterval(async () => {
   for (const [sessionId, participants] of sessionParticipants.entries()) {
@@ -88,20 +85,21 @@ setInterval(async () => {
   }
 }, 5000);
 
-// Periodic code snapshots — every 30s for active sessions
+// Text snapshots for replay/audit only (Yjs binary state is the live source of truth)
 setInterval(async () => {
   for (const [sessionId] of sessionParticipants.entries()) {
     try {
+      const session = await getSession(sessionId);
       await saveSnapshot({
         sessionId,
-        language: sessionLanguages.get(sessionId) || 'javascript',
+        language: session?.language || 'javascript',
         trigger: 'periodic',
       });
     } catch (err) {
       console.error('[Snapshot] Save error:', err);
     }
   }
-}, 30000);
+}, 60000);
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {

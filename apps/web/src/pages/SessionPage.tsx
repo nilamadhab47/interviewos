@@ -19,7 +19,6 @@ import { api, ApiError } from '@/lib/api';
 import { useSessionSocket } from '@/hooks/useSessionSocket';
 import type { SessionQuestionPayload } from '@interviewos/shared';
 import { fetchSessionQuestion } from '@/lib/sessionApi';
-import { resolveStarterCode } from '@/lib/questionCode';
 import type { Question } from '@/types/question';
 
 type SessionLocationState = {
@@ -42,7 +41,6 @@ export default function SessionPage() {
   const { user, accessToken, authMode } = useAuthStore();
   const { session, fetchSession, clearSession } = useSessionStore();
   const editorRef = useRef<MonacoEditorHandle>(null);
-  const lastAppliedQuestionKey = useRef<string | null>(null);
 
   const [language, setLanguage] = useState('javascript');
   const [attachedQuestion, setAttachedQuestion] = useState<Question | null>(
@@ -66,7 +64,6 @@ export default function SessionPage() {
   const participantRole =
     myParticipant?.role ?? (authMode === 'session' ? 'candidate' : 'interviewer');
 
-  // Yjs collaboration — same room id as session id for shared editor
   const yjsState = useYjs({
     roomId: id || '',
     userName: user?.name || user?.email || 'Anonymous',
@@ -97,14 +94,12 @@ export default function SessionPage() {
     }
   }, [session]);
 
-  // Load attached question from session (after schedule, refresh, or candidate join)
   useEffect(() => {
     if (!id || !accessToken) return;
 
     if (!session?.questionId) {
       if (!scheduledQuestion) {
         setAttachedQuestion(null);
-        lastAppliedQuestionKey.current = null;
       }
       return;
     }
@@ -114,9 +109,6 @@ export default function SessionPage() {
     fetchSessionQuestion(id, accessToken).then((question) => {
       if (!cancelled) {
         setAttachedQuestion(question);
-        if (!question) {
-          lastAppliedQuestionKey.current = null;
-        }
       }
     });
 
@@ -126,10 +118,8 @@ export default function SessionPage() {
   }, [id, session?.questionId, accessToken, scheduledQuestion]);
 
   const currentLang = getLanguageById(language);
-  const editorStarterCode = resolveStarterCode(attachedQuestion, language);
   const isInterviewer = participantRole === 'interviewer';
 
-  // Telemetry — only for candidates
   const { trackCompile } = useTelemetry({
     sessionId: id || '',
     participantId: myParticipant?.id || '',
@@ -137,162 +127,12 @@ export default function SessionPage() {
     enabled: !isInterviewer && !!myParticipant?.id && !!id,
   });
 
-  // Anti-cheat — enforces permissions on client side
   useAntiCheat({ permissions });
 
-  const applyEditorCode = useCallback(
-    (code: string, options?: { force?: boolean; onlyIfEmpty?: boolean }) => {
-      if (!code.trim()) return false;
+  const handleQuestionSelected = useCallback((question: Question) => {
+    setAttachedQuestion(question);
+  }, []);
 
-      const current =
-        yjsState?.ytext?.toString() ?? editorRef.current?.getValue() ?? '';
-      if (options?.onlyIfEmpty !== false && !options?.force && current.trim()) {
-        return false;
-      }
-
-      if (yjsState) {
-        yjsState.ydoc.transact(() => {
-          const len = yjsState.ytext.length;
-          if (len > 0) yjsState.ytext.delete(0, len);
-          yjsState.ytext.insert(0, code);
-        });
-      }
-
-      editorRef.current?.setValue(code);
-      return true;
-    },
-    [yjsState],
-  );
-
-  const applyQuestionStarterCode = useCallback(
-    (question: Question, lang: string, options?: { force?: boolean; onlyIfEmpty?: boolean }) => {
-      const code = resolveStarterCode(question, lang);
-      const key = `${question.id}:${lang}`;
-      if (!options?.force && lastAppliedQuestionKey.current === key) return false;
-
-      const applied = applyEditorCode(code, options);
-      if (applied) {
-        lastAppliedQuestionKey.current = key;
-      }
-      return applied;
-    },
-    [applyEditorCode],
-  );
-
-  const persistEditorSnapshot = useCallback(
-    (lang: string) => {
-      if (!id || !accessToken) return;
-      const code =
-        editorRef.current?.getValue() ?? yjsState?.ytext?.toString() ?? '';
-      if (!code.trim()) return;
-
-      api(`/api/sessions/${id}/snapshot`, {
-        method: 'POST',
-        body: { language: lang, code },
-        token: accessToken,
-      }).catch(() => {
-        // non-blocking
-      });
-    },
-    [id, accessToken, yjsState?.ytext],
-  );
-
-  // Load editor code from API (snapshot → question starter) — works on refresh even if Yjs is reconnecting
-  useEffect(() => {
-    if (!id || !accessToken || !session) return;
-
-    let cancelled = false;
-
-    async function bootstrapEditor() {
-      const current =
-        yjsState?.ytext?.toString() ?? editorRef.current?.getValue() ?? '';
-      if (current.trim()) return;
-
-      try {
-        const { code } = await api<{ code: string; source: string }>(
-          `/api/sessions/${id}/editor-code`,
-          { token: accessToken },
-        );
-        if (cancelled || !code?.trim()) return;
-
-        if (applyEditorCode(code, { onlyIfEmpty: true })) {
-          persistEditorSnapshot(language);
-        }
-      } catch {
-        if (attachedQuestion && !cancelled) {
-          applyQuestionStarterCode(attachedQuestion, language, { onlyIfEmpty: true });
-        }
-      }
-    }
-
-    const t1 = window.setTimeout(bootstrapEditor, 300);
-    const t2 = window.setTimeout(bootstrapEditor, 1200);
-    const t3 = window.setTimeout(bootstrapEditor, 2500);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-      window.clearTimeout(t3);
-    };
-  }, [
-    id,
-    accessToken,
-    session,
-    language,
-    attachedQuestion,
-    yjsState,
-    applyEditorCode,
-    applyQuestionStarterCode,
-    persistEditorSnapshot,
-  ]);
-
-  // Apply question starter when attached (don't wait for Yjs sync)
-  useEffect(() => {
-    if (!attachedQuestion) return;
-
-    const run = () => {
-      const applied = applyQuestionStarterCode(attachedQuestion, language, {
-        onlyIfEmpty: true,
-      });
-      if (applied) {
-        persistEditorSnapshot(language);
-      }
-    };
-
-    run();
-    const t1 = window.setTimeout(run, 100);
-    const t2 = window.setTimeout(run, 600);
-
-    return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-    };
-  }, [attachedQuestion, language, applyQuestionStarterCode, persistEditorSnapshot]);
-
-  // Re-apply starter when Yjs finishes syncing (fixes "only after connect" race)
-  useEffect(() => {
-    if (!attachedQuestion || !yjsState?.isSynced) return;
-
-    const run = () => {
-      applyQuestionStarterCode(attachedQuestion, language, { onlyIfEmpty: true });
-    };
-
-    run();
-    const t = window.setTimeout(run, 150);
-    return () => window.clearTimeout(t);
-  }, [attachedQuestion, language, yjsState?.isSynced, applyQuestionStarterCode]);
-
-  const handleQuestionSelected = useCallback(
-    (question: Question) => {
-      setAttachedQuestion(question);
-      applyQuestionStarterCode(question, language, { force: true });
-      persistEditorSnapshot(language);
-    },
-    [language, applyQuestionStarterCode, persistEditorSnapshot],
-  );
-
-  // Realtime question sync when interviewer attaches or changes the question
   useEffect(() => {
     if (!id) return;
 
@@ -305,21 +145,17 @@ export default function SessionPage() {
 
       if (!payload.question) {
         setAttachedQuestion(null);
-        lastAppliedQuestionKey.current = null;
         return;
       }
 
-      const question = payload.question as Question;
-      setAttachedQuestion(question);
-      applyQuestionStarterCode(question, payload.language || language, { force: true });
-      persistEditorSnapshot(payload.language || language);
+      setAttachedQuestion(payload.question as Question);
     };
 
     socket.on('session:question_changed', onQuestionChanged);
     return () => {
       socket.off('session:question_changed', onQuestionChanged);
     };
-  }, [id, language, applyQuestionStarterCode, persistEditorSnapshot]);
+  }, [id]);
 
   const getCurrentCode = useCallback((): string => {
     const fromEditor = editorRef.current?.getValue();
@@ -407,7 +243,6 @@ export default function SessionPage() {
 
   return (
     <div className="h-screen flex flex-col bg-bg-primary">
-      {/* Top bar */}
       <header className="flex items-center justify-between px-4 py-2 border-b border-border bg-bg-secondary/50 shrink-0">
         <div className="flex items-center gap-4">
           <Link to="/dashboard" className="flex items-center gap-2">
@@ -419,7 +254,6 @@ export default function SessionPage() {
             </span>
           </Link>
 
-          {/* Language selector */}
           <div className="relative">
             <button
               onClick={() => setShowLangDropdown(!showLangDropdown)}
@@ -448,7 +282,6 @@ export default function SessionPage() {
             )}
           </div>
 
-          {/* Connection status */}
           <div className="flex items-center gap-1.5">
             {yjsState?.isConnected ? (
               <Wifi className="w-3.5 h-3.5 text-green-500" />
@@ -465,9 +298,7 @@ export default function SessionPage() {
           </div>
         </div>
 
-        {/* Right: toggles + run */}
         <div className="flex items-center gap-2">
-          {/* Video toggle */}
           <button
             onClick={() => setShowVideo(!showVideo)}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors ${
@@ -485,7 +316,6 @@ export default function SessionPage() {
             <span className="hidden sm:inline">Video</span>
           </button>
 
-          {/* Sidebar toggle */}
           <button
             onClick={() => setShowSidebar(!showSidebar)}
             className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg border text-sm transition-colors ${
@@ -517,37 +347,29 @@ export default function SessionPage() {
         </div>
       </header>
 
-      {/* Main content — Google Meet style layout */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left: Editor + Output */}
         <div className="flex-1 flex flex-col min-w-0">
-          {/* Editor */}
           <div className="flex-1 min-h-0">
             <MonacoEditor
               ref={editorRef}
               language={currentLang?.monacoId || 'javascript'}
-              seedCode={editorStarterCode}
               yjsState={yjsState}
             />
           </div>
 
-          {/* Output */}
           <div className="h-48 shrink-0 border-t border-border">
             <OutputPanel result={compileResult} isCompiling={isCompiling} />
           </div>
         </div>
 
-        {/* Right panel: Video on top + Sidebar below (always visible like Meet/Zoom) */}
         {(showVideo || showSidebar) && (
           <div className="w-80 shrink-0 border-l border-border flex flex-col bg-bg-secondary/30">
-            {/* Video panel — persistent, stacked like Google Meet */}
             {showVideo && id && accessToken && (
               <div className="h-80 shrink-0 border-b border-border p-1.5">
                 <VideoRoom sessionId={id} accessToken={accessToken} layout="sidebar" />
               </div>
             )}
 
-            {/* Sidebar content: session info, participants, controls */}
             {showSidebar && id && accessToken && (
               <div className="flex-1 min-h-0 overflow-hidden">
                 <Sidebar

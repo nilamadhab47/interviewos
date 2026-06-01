@@ -12,8 +12,9 @@ import {
   updateSessionQuestion,
 } from '../services/session.service';
 import { saveSnapshot } from '../services/snapshot.service';
-import { getEditorBootstrap } from '../services/editor-bootstrap.service';
 import { broadcastSessionQuestion } from '../services/session-question-broadcast.service';
+import { tryInjectQuestionStarter, resetEditorToStarter } from '../services/yjs-question.service';
+import { flushYjsDocument } from '../yjs/server';
 
 export const sessionRouter = Router();
 
@@ -40,6 +41,7 @@ sessionRouter.post('/', requireAuth, async (req, res) => {
     });
 
     if (result.session.questionId) {
+      await tryInjectQuestionStarter(result.session.id);
       await broadcastSessionQuestion(result.session.id);
     }
 
@@ -49,21 +51,6 @@ sessionRouter.post('/', requireAuth, async (req, res) => {
     res.status(400).json({ error: message });
   }
 });
-
-// GET /api/sessions/:id/editor-code — Starter / saved code for the editor (refresh fallback)
-sessionRouter.get(
-  '/:id/editor-code',
-  requireSessionAuth,
-  requireSessionAccess(),
-  async (req, res) => {
-    try {
-      const bootstrap = await getEditorBootstrap(req.params.id);
-      res.json(bootstrap);
-    } catch {
-      res.status(500).json({ error: 'Failed to load editor code' });
-    }
-  },
-);
 
 // GET /api/sessions/:id/question — Attached coding question (interviewer or invite participant)
 sessionRouter.get(
@@ -130,10 +117,25 @@ sessionRouter.patch('/:id/question', requireAuth, async (req, res) => {
       res.status(404).json({ error: 'Interview not found' });
       return;
     }
+    await tryInjectQuestionStarter(req.params.id);
     await broadcastSessionQuestion(req.params.id);
     res.json(updated);
   } catch {
     res.status(500).json({ error: 'Failed to update question' });
+  }
+});
+
+// POST /api/sessions/:id/editor/reset-starter — Replace editor with question starter (interviewer)
+sessionRouter.post('/:id/editor/reset-starter', requireAuth, async (req, res) => {
+  try {
+    const ok = await resetEditorToStarter(req.params.id);
+    if (!ok) {
+      res.status(400).json({ error: 'No question attached or starter code unavailable' });
+      return;
+    }
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Failed to reset editor' });
   }
 });
 
@@ -184,6 +186,8 @@ sessionRouter.post('/:id/start', requireAuth, async (req, res) => {
 // POST /api/sessions/:id/end — End interview
 sessionRouter.post('/:id/end', requireAuth, async (req, res) => {
   try {
+    const session = await getSession(req.params.id);
+    await flushYjsDocument(req.params.id, session?.language);
     const updated = await updateSessionStatus(req.params.id, 'completed');
     res.json(updated);
   } catch (err: unknown) {

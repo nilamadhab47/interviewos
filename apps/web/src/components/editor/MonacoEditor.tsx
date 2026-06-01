@@ -12,8 +12,6 @@ export interface MonacoEditorHandle {
 
 interface MonacoEditorProps {
   language: string;
-  /** Initial / question seed text for empty collaborative docs */
-  seedCode?: string;
   onChange?: (value: string) => void;
   readOnly?: boolean;
   yjsState?: YjsState | null;
@@ -21,15 +19,16 @@ interface MonacoEditorProps {
 
 const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(function MonacoEditor({
   language,
-  seedCode = '',
   onChange,
   readOnly = false,
   yjsState,
 }, ref) {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const bindingRef = useRef<MonacoBinding | null>(null);
-  // Track which provider we've bound to, so we skip re-binding on status-only changes
-  const boundProviderRef = useRef<unknown>(null);
+
+  const isCollaborative = !!yjsState;
+  const isSyncing = isCollaborative && !yjsState.isSynced;
+  const editorReadOnly = readOnly || isSyncing;
 
   useImperativeHandle(
     ref,
@@ -60,96 +59,54 @@ const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(function 
     [yjsState],
   );
 
-  const handleMount: OnMount = useCallback(
-    (editorInstance) => {
-      editorRef.current = editorInstance;
-      editorInstance.focus();
+  const handleMount: OnMount = useCallback((editorInstance) => {
+    editorRef.current = editorInstance;
+    editorInstance.focus();
+  }, []);
 
-      // If Yjs is ready and we haven't bound yet, create binding
-      if (yjsState && boundProviderRef.current !== yjsState.provider) {
-        createBinding(editorInstance, yjsState);
-        boundProviderRef.current = yjsState.provider;
-      }
-    },
-    // Only re-create the callback when the provider identity changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [yjsState?.provider],
-  );
+  function createBinding(editorInstance: editor.IStandaloneCodeEditor, yjs: YjsState) {
+    bindingRef.current?.destroy();
 
-  // Bind/unbind when the Yjs provider itself changes (not on status updates)
-  const currentProvider = yjsState?.provider ?? null;
+    const model = editorInstance.getModel();
+    if (!model) return;
+
+    bindingRef.current = new MonacoBinding(
+      yjs.ytext,
+      model,
+      new Set([editorInstance]),
+      yjs.provider.awareness,
+    );
+  }
+
+  // Bind only after Yjs has synced with the server — otherwise Monaco stays on an empty local doc
   useEffect(() => {
-    if (!currentProvider || !yjsState) {
-      // Provider gone — clean up
+    const editorInstance = editorRef.current;
+    if (!editorInstance || !yjsState) {
       bindingRef.current?.destroy();
       bindingRef.current = null;
-      boundProviderRef.current = null;
       return;
     }
 
-    // Already bound to this provider instance
-    if (boundProviderRef.current === currentProvider) return;
-
-    if (editorRef.current) {
-      createBinding(editorRef.current, yjsState);
-      boundProviderRef.current = currentProvider;
+    if (!yjsState.isSynced) {
+      bindingRef.current?.destroy();
+      bindingRef.current = null;
+      return;
     }
+
+    createBinding(editorInstance, yjsState);
 
     return () => {
       bindingRef.current?.destroy();
       bindingRef.current = null;
-      boundProviderRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentProvider]);
+  }, [yjsState?.provider, yjsState?.isSynced]);
 
-  function seedYjsIfEmpty(
-    yjs: YjsState,
-    editorInstance: editor.IStandaloneCodeEditor,
-    code: string,
-  ) {
-    if (!code || yjs.ytext.length > 0) return;
-    yjs.ydoc.transact(() => {
-      yjs.ytext.insert(0, code);
-    });
-    if (editorInstance.getValue() !== code) {
-      editorInstance.setValue(code);
-    }
-  }
-
-  // Re-seed when question loads after Yjs sync (page refresh race)
   useEffect(() => {
-    if (!yjsState?.isSynced || !seedCode || !editorRef.current) return;
-    seedYjsIfEmpty(yjsState, editorRef.current, seedCode);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seedCode, yjsState?.isSynced, yjsState?.provider]);
-
-  function createBinding(
-    editorInstance: editor.IStandaloneCodeEditor,
-    yjs: YjsState,
-  ) {
-    // Clean up old binding
-    bindingRef.current?.destroy();
-
-    seedYjsIfEmpty(yjs, editorInstance, seedCode);
-
-    // Create y-monaco binding — this handles:
-    // 1. Local edits → Yjs operations
-    // 2. Remote Yjs operations → Monaco edits
-    // 3. Cursor positions via awareness
-    const binding = new MonacoBinding(
-      yjs.ytext,
-      editorInstance.getModel()!,
-      new Set([editorInstance]),
-      yjs.provider.awareness,
-    );
-
-    bindingRef.current = binding;
-  }
+    editorRef.current?.updateOptions({ readOnly: editorReadOnly });
+  }, [editorReadOnly]);
 
   const handleChange = useCallback(
     (value: string | undefined) => {
-      // Only fire onChange for non-Yjs mode (single-user fallback)
       if (!yjsState && value !== undefined && onChange) {
         onChange(value);
       }
@@ -159,7 +116,6 @@ const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(function 
 
   return (
     <div className="h-full w-full rounded-lg overflow-hidden border border-border relative">
-      {/* Connection status indicator */}
       {yjsState && (
         <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5">
           <div
@@ -177,10 +133,19 @@ const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(function 
         </div>
       )}
 
+      {isSyncing && (
+        <div className="absolute inset-0 z-[5] flex items-center justify-center bg-bg-primary/80 backdrop-blur-[1px] pointer-events-none">
+          <div className="flex items-center gap-3 text-text-muted">
+            <div className="w-5 h-5 border-2 border-text-muted/30 border-t-accent rounded-full animate-spin" />
+            <span className="text-sm">Syncing editor with session…</span>
+          </div>
+        </div>
+      )}
+
       <Editor
         height="100%"
         language={language}
-        defaultValue={yjsState ? undefined : seedCode}
+        defaultValue={isCollaborative ? undefined : ''}
         onChange={handleChange}
         onMount={handleMount}
         theme="vs-dark"
@@ -199,7 +164,7 @@ const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(function 
           tabSize: 2,
           wordWrap: 'on',
           automaticLayout: true,
-          readOnly,
+          readOnly: editorReadOnly,
           bracketPairColorization: { enabled: true },
           guides: {
             bracketPairs: true,

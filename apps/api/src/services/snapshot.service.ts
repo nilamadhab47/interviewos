@@ -4,8 +4,8 @@ import { eq, and, asc, desc } from 'drizzle-orm';
 import { getDocText } from '../yjs/server';
 
 /**
- * Save a code snapshot for a session.
- * Called periodically (every 30s) for active sessions, and on compile/session-end.
+ * Save a text code snapshot for replay/audit.
+ * Live editor state is persisted as binary Yjs CRDT in yjs_documents.
  */
 export async function saveSnapshot(input: {
   sessionId: string;

@@ -7,32 +7,26 @@ import * as awarenessProtocol from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import { hydrateYjsDocument } from '../services/yjs-hydrate.service';
+import { saveYjsDocument, getMonacoText } from '../services/yjs-doc.service';
+import { getSession } from '../services/session.service';
 
 const MSG_SYNC = 0;
 const MSG_AWARENESS = 1;
 const MSG_QUERY_AWARENESS = 3;
 
+const PERSIST_DEBOUNCE_MS = 2000;
+const ROOM_DESTROY_DELAY_MS = 30000;
+
 type Room = {
   doc: Y.Doc;
   awareness: awarenessProtocol.Awareness;
   conns: Map<WebSocket, Set<number>>;
+  language: string;
+  persistTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const docs = new Map<string, Room>();
-const hydrationScheduled = new Set<string>();
-
-function scheduleRoomHydration(roomName: string, doc: Y.Doc) {
-  if (hydrationScheduled.has(roomName)) return;
-  hydrationScheduled.add(roomName);
-
-  void hydrateYjsDocument(roomName, doc)
-    .catch((err) => {
-      console.error(`[Yjs] Hydration failed for room ${roomName}:`, err);
-    })
-    .finally(() => {
-      hydrationScheduled.delete(roomName);
-    });
-}
+const roomInitPromises = new Map<string, Promise<Room>>();
 
 function broadcastToRoom(room: Room, buf: Uint8Array, exclude?: WebSocket) {
   room.conns.forEach((_, conn) => {
@@ -42,35 +36,99 @@ function broadcastToRoom(room: Room, buf: Uint8Array, exclude?: WebSocket) {
   });
 }
 
-function getOrCreateDoc(roomName: string): Room {
-  const existing = docs.get(roomName);
-  if (existing) return existing;
+function schedulePersist(sessionId: string, room: Room) {
+  if (room.persistTimer) clearTimeout(room.persistTimer);
+  room.persistTimer = setTimeout(() => {
+    room.persistTimer = null;
+    void persistRoom(sessionId, room).catch((err) => {
+      console.error(`[Yjs] Persist failed for ${sessionId}:`, err);
+    });
+  }, PERSIST_DEBOUNCE_MS);
+}
 
-  const doc = new Y.Doc();
-  const awareness = new awarenessProtocol.Awareness(doc);
-  const room: Room = { doc, awareness, conns: new Map() };
+async function persistRoom(sessionId: string, room: Room): Promise<void> {
+  const text = getMonacoText(room.doc);
+  if (!text.trim()) return;
+  await saveYjsDocument(sessionId, room.doc, room.language);
+}
 
-  doc.on('update', (update: Uint8Array, origin: unknown) => {
-    const encoder = encoding.createEncoder();
-    encoding.writeVarUint(encoder, MSG_SYNC);
-    syncProtocol.writeUpdate(encoder, update);
-    broadcastToRoom(room, encoding.toUint8Array(encoder), origin as WebSocket);
+export async function flushYjsDocument(
+  sessionId: string,
+  language?: string,
+): Promise<void> {
+  const room = docs.get(sessionId);
+  if (!room) return;
+
+  if (room.persistTimer) {
+    clearTimeout(room.persistTimer);
+    room.persistTimer = null;
+  }
+
+  if (language) room.language = language;
+  await persistRoom(sessionId, room);
+}
+
+export function getLiveRoomDoc(sessionId: string): Y.Doc | null {
+  return docs.get(sessionId)?.doc ?? null;
+}
+
+function broadcastDocUpdate(room: Room, update: Uint8Array, exclude?: WebSocket) {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MSG_SYNC);
+  syncProtocol.writeUpdate(encoder, update);
+  broadcastToRoom(room, encoding.toUint8Array(encoder), exclude);
+}
+
+function setupRoomListeners(sessionId: string, room: Room) {
+  room.doc.on('update', (update: Uint8Array, origin: unknown) => {
+    schedulePersist(sessionId, room);
+    broadcastDocUpdate(room, update, origin as WebSocket);
   });
 
-  awareness.on('update', ({ added, updated, removed }) => {
+  room.awareness.on('update', ({ added, updated, removed }) => {
     const changedClients = added.concat(updated, removed);
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MSG_AWARENESS);
     encoding.writeVarUint8Array(
       encoder,
-      awarenessProtocol.encodeAwarenessUpdate(awareness, changedClients),
+      awarenessProtocol.encodeAwarenessUpdate(room.awareness, changedClients),
     );
     broadcastToRoom(room, encoding.toUint8Array(encoder));
   });
+}
 
-  docs.set(roomName, room);
-  scheduleRoomHydration(roomName, doc);
+async function createRoom(sessionId: string): Promise<Room> {
+  const session = await getSession(sessionId);
+  const language = session?.language ?? 'javascript';
+
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  const room: Room = {
+    doc,
+    awareness,
+    conns: new Map(),
+    language,
+    persistTimer: null,
+  };
+
+  setupRoomListeners(sessionId, room);
+  await hydrateYjsDocument(sessionId, doc);
+  docs.set(sessionId, room);
   return room;
+}
+
+function getOrCreateDoc(sessionId: string): Promise<Room> {
+  const existing = docs.get(sessionId);
+  if (existing) return Promise.resolve(existing);
+
+  let promise = roomInitPromises.get(sessionId);
+  if (!promise) {
+    promise = createRoom(sessionId).finally(() => {
+      roomInitPromises.delete(sessionId);
+    });
+    roomInitPromises.set(sessionId, promise);
+  }
+  return promise;
 }
 
 function handleMessage(conn: WebSocket, room: Room, message: Uint8Array) {
@@ -82,8 +140,9 @@ function handleMessage(conn: WebSocket, room: Room, message: Uint8Array) {
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, MSG_SYNC);
       syncProtocol.readSyncMessage(decoder, encoder, room.doc, conn);
-      if (encoding.length(encoder) > 1) {
-        conn.send(encoding.toUint8Array(encoder));
+      const reply = encoding.toUint8Array(encoder);
+      if (reply.length > 1) {
+        conn.send(reply);
       }
       break;
     }
@@ -128,6 +187,19 @@ function sendAwareness(conn: WebSocket, awareness: awarenessProtocol.Awareness) 
   conn.send(encoding.toUint8Array(encoder));
 }
 
+async function destroyRoomWhenIdle(sessionId: string) {
+  setTimeout(async () => {
+    const room = docs.get(sessionId);
+    if (!room || room.conns.size > 0) return;
+
+    await flushYjsDocument(sessionId);
+
+    room.doc.destroy();
+    docs.delete(sessionId);
+    console.log(`[Yjs] Room destroyed: ${sessionId}`);
+  }, ROOM_DESTROY_DELAY_MS);
+}
+
 export function setupYjsServer(httpServer: HttpServer) {
   const wss = new WebSocketServer({ noServer: true });
 
@@ -153,48 +225,52 @@ export function setupYjsServer(httpServer: HttpServer) {
       return;
     }
 
-    const room = getOrCreateDoc(roomName);
-    room.conns.set(conn, new Set());
+    void (async () => {
+      try {
+        const room = await getOrCreateDoc(roomName);
+        room.conns.set(conn, new Set());
 
-    console.log(`[Yjs] Client connected to room: ${roomName} (${room.conns.size} clients)`);
-
-    sendSync(conn, room.doc);
-    sendAwareness(conn, room.awareness);
-
-    conn.on('message', (data: ArrayBuffer | Buffer) => {
-      const message = new Uint8Array(
-        data instanceof ArrayBuffer
-          ? data
-          : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
-      );
-      handleMessage(conn, room, message);
-    });
-
-    conn.on('close', () => {
-      const controlledIds = room.conns.get(conn);
-      room.conns.delete(conn);
-
-      if (controlledIds) {
-        awarenessProtocol.removeAwarenessStates(
-          room.awareness,
-          Array.from(controlledIds),
-          null,
+        console.log(
+          `[Yjs] Client connected to room: ${roomName} (${room.conns.size} clients)`,
         );
-      }
 
-      console.log(`[Yjs] Client disconnected from room: ${roomName} (${room.conns.size} clients)`);
+        sendSync(conn, room.doc);
+        sendAwareness(conn, room.awareness);
 
-      if (room.conns.size === 0) {
-        setTimeout(() => {
-          const r = docs.get(roomName);
-          if (r && r.conns.size === 0) {
-            r.doc.destroy();
-            docs.delete(roomName);
-            console.log(`[Yjs] Room destroyed: ${roomName}`);
+        conn.on('message', (data: ArrayBuffer | Buffer) => {
+          const message = new Uint8Array(
+            data instanceof ArrayBuffer
+              ? data
+              : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+          );
+          handleMessage(conn, room, message);
+        });
+
+        conn.on('close', () => {
+          const controlledIds = room.conns.get(conn);
+          room.conns.delete(conn);
+
+          if (controlledIds) {
+            awarenessProtocol.removeAwarenessStates(
+              room.awareness,
+              Array.from(controlledIds),
+              null,
+            );
           }
-        }, 30000);
+
+          console.log(
+            `[Yjs] Client disconnected from room: ${roomName} (${room.conns.size} clients)`,
+          );
+
+          if (room.conns.size === 0) {
+            void destroyRoomWhenIdle(roomName);
+          }
+        });
+      } catch (err) {
+        console.error(`[Yjs] Connection setup failed for ${roomName}:`, err);
+        conn.close(1011, 'Room initialization failed');
       }
-    });
+    })();
   });
 
   console.log('[Yjs] WebSocket server ready on /yjs');
@@ -210,5 +286,5 @@ export function getDocState(roomName: string): Uint8Array | null {
 export function getDocText(roomName: string): string | null {
   const room = docs.get(roomName);
   if (!room) return null;
-  return room.doc.getText('monaco').toString();
+  return getMonacoText(room.doc);
 }
