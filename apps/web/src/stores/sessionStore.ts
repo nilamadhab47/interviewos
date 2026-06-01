@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api } from '@/lib/api';
-import type { Session, SessionPermissions, Participant } from '@interviewos/shared';
+import { normalizeSession } from '@/lib/sessionApi';
+import type { Session, Participant } from '@interviewos/shared';
 
 interface SessionState {
   session: (Session & { participants: Participant[] }) | null;
@@ -54,15 +55,15 @@ export const useSessionStore = create<SessionState>((set) => ({
   },
 
   fetchSession: async (id, token) => {
-    set({ isLoading: true, error: null });
+    set({ isLoading: true, error: null, session: null });
     try {
       const data = await api<Session & { participants: Participant[] }>(
         `/api/sessions/${id}`,
         { token },
       );
-      set({ session: data, isLoading: false });
+      set({ session: normalizeSession(data), isLoading: false });
     } catch {
-      set({ error: 'Failed to load session', isLoading: false });
+      set({ error: 'Failed to load session', isLoading: false, session: null });
     }
   },
 

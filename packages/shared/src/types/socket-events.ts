@@ -2,6 +2,22 @@ import type { SessionPermissions, SessionStatus, CompilationResult } from './ses
 import type { TelemetryEvent, TelemetrySummary } from './telemetry';
 import type { Participant } from './user';
 
+/** Coding question payload broadcast to everyone in the session room */
+export interface SessionQuestionPayload {
+  questionId: string | null;
+  question: {
+    id: string;
+    title: string;
+    description: string;
+    difficulty: string;
+    defaultCode: Record<string, string>;
+    testCases: Array<{ input: string; expected: string }>;
+    tags: string[];
+    isPublic: boolean;
+  } | null;
+  language: string;
+}
+
 export interface ServerToClientEvents {
   'session:participant_joined': (data: {
     participant: Participant;
@@ -12,6 +28,7 @@ export interface ServerToClientEvents {
   'session:permissions_changed': (data: {
     permissions: SessionPermissions;
   }) => void;
+  'session:question_changed': (data: SessionQuestionPayload) => void;
   'compile:result': (data: CompilationResult) => void;
   'compile:status': (data: { isCompiling: boolean }) => void;
   'telemetry:summary': (data: TelemetrySummary) => void;

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { api, ApiError, setAuthTokenGetter, tryRefreshSession } from '@/lib/api';
+import { isTokenExpired } from '@/lib/jwt';
 import {
   saveUserAuth,
   loadUserAuth,
@@ -89,6 +90,8 @@ function applyUserAuth(
   });
 }
 
+let authInitPromise: Promise<void> | null = null;
+
 export const useAuthStore = create<AuthState>((set, get) => {
   setAuthTokenGetter(() => get().accessToken);
 
@@ -112,57 +115,68 @@ export const useAuthStore = create<AuthState>((set, get) => {
 
     initializeAuth: async () => {
       if (get().isInitialized) return;
+      if (authInitPromise) return authInitPromise;
 
-      set({ isLoading: true });
+      authInitPromise = (async () => {
+        set({ isLoading: true });
 
-      const stored = loadUserAuth();
-
-      // 1. Valid access token in localStorage (common case right after login / quick reload)
-      if (stored.accessToken && stored.user) {
-        try {
-          const { user } = await api<{ user: User }>('/api/auth/me', {
-            token: stored.accessToken,
-            skipAuthRetry: true,
+        // 1. Interview invite session (candidate) — never call /api/auth/me or /refresh
+        const sessionStored = loadSessionAuth();
+        if (sessionStored.accessToken && sessionStored.user) {
+          set({
+            accessToken: sessionStored.accessToken,
+            user: sessionUserToUser(sessionStored.user),
+            authMode: 'session',
+            error: null,
+            isInitialized: true,
+            isLoading: false,
           });
-          applyUserAuth(set, stored.accessToken, user);
-          set({ isInitialized: true, isLoading: false });
-          return;
-        } catch {
-          // Access token expired — try refresh cookie below
-        }
-      }
-
-      // 2. HttpOnly refresh cookie (only if user has logged in before — avoids 401 noise for guests)
-      if (hasAccountHint()) {
-        const refreshed = await tryRefreshSession();
-        if (refreshed) {
-          applyUserAuth(set, refreshed.accessToken, refreshed.user);
-          set({ isInitialized: true, isLoading: false });
           return;
         }
-        clearUserAuth();
-      }
 
-      // 3. Restore interview join session (candidate / guest link)
-      const sessionStored = loadSessionAuth();
-      if (sessionStored.accessToken && sessionStored.user) {
+        const stored = loadUserAuth();
+
+        // 2. Account holder — validate token or refresh cookie
+        if (stored.accessToken && stored.user && !isTokenExpired(stored.accessToken)) {
+          try {
+            const { user } = await api<{ user: User }>('/api/auth/me', {
+              token: stored.accessToken,
+              skipAuthRetry: true,
+            });
+            applyUserAuth(set, stored.accessToken, user);
+            set({ isInitialized: true, isLoading: false });
+            return;
+          } catch {
+            // fall through to refresh
+          }
+        }
+
+        if (hasAccountHint()) {
+          const refreshed = await tryRefreshSession();
+          if (refreshed) {
+            applyUserAuth(set, refreshed.accessToken, refreshed.user);
+            set({ isInitialized: true, isLoading: false });
+            return;
+          }
+          clearUserAuth();
+        } else if (stored.accessToken) {
+          clearUserAuth();
+        }
+
         set({
-          accessToken: sessionStored.accessToken,
-          user: sessionUserToUser(sessionStored.user),
-          authMode: 'session',
-          error: null,
+          user: null,
+          accessToken: null,
+          authMode: null,
+          isInitialized: true,
+          isLoading: false,
         });
-        set({ isInitialized: true, isLoading: false });
-        return;
-      }
+      })();
 
-      set({
-        user: null,
-        accessToken: null,
-        authMode: null,
-        isInitialized: true,
-        isLoading: false,
-      });
+      try {
+        await authInitPromise;
+      } finally {
+        authInitPromise = null;
+      }
     },
 
     register: async (input) => {
@@ -237,6 +251,8 @@ export const useAuthStore = create<AuthState>((set, get) => {
         user: sessionUserToUser(participant),
         authMode: 'session',
         error: null,
+        isInitialized: true,
+        isLoading: false,
       });
     },
 

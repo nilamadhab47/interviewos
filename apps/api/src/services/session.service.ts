@@ -163,6 +163,7 @@ export async function joinByToken(token: string) {
       title: session.title,
       status: session.status,
       language: session.language,
+      questionId: session.questionId,
       permissions: {
         allowAutocomplete: session.allowAutocomplete,
         allowPaste: session.allowPaste,

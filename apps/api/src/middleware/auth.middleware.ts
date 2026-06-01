@@ -47,3 +47,36 @@ export function requireSessionAuth(req: Request, res: Response, next: NextFuncti
     res.status(401).json({ error: 'Invalid or expired token' });
   }
 }
+
+/** Ensures the caller may access the interview session in `req.params[paramName]`. */
+export function requireSessionAccess(paramName = 'id') {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const sessionId = req.params[paramName];
+    if (!sessionId) {
+      res.status(400).json({ error: 'Missing session id' });
+      return;
+    }
+
+    if (req.sessionParticipant) {
+      if (req.sessionParticipant.sessionId !== sessionId) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      next();
+      return;
+    }
+
+    if (req.user) {
+      const { getSession } = await import('../services/session.service');
+      const session = await getSession(sessionId);
+      if (!session || session.orgId !== req.user.orgId) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      next();
+      return;
+    }
+
+    res.status(401).json({ error: 'Unauthorized' });
+  };
+}

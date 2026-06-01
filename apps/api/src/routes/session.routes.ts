@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { createSessionSchema } from '@interviewos/shared';
-import { requireAuth } from '../middleware/auth.middleware';
+import { requireAuth, requireSessionAuth, requireSessionAccess } from '../middleware/auth.middleware';
+import { getQuestion } from '../services/question.service';
 import {
   createSession,
   getSession,
@@ -12,6 +13,7 @@ import {
 } from '../services/session.service';
 import { saveSnapshot } from '../services/snapshot.service';
 import { getEditorBootstrap } from '../services/editor-bootstrap.service';
+import { broadcastSessionQuestion } from '../services/session-question-broadcast.service';
 
 export const sessionRouter = Router();
 
@@ -37,6 +39,10 @@ sessionRouter.post('/', requireAuth, async (req, res) => {
       ...input,
     });
 
+    if (result.session.questionId) {
+      await broadcastSessionQuestion(result.session.id);
+    }
+
     res.status(201).json(result);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Failed to create session';
@@ -45,17 +51,46 @@ sessionRouter.post('/', requireAuth, async (req, res) => {
 });
 
 // GET /api/sessions/:id/editor-code — Starter / saved code for the editor (refresh fallback)
-sessionRouter.get('/:id/editor-code', requireAuth, async (req, res) => {
-  try {
-    const bootstrap = await getEditorBootstrap(req.params.id);
-    res.json(bootstrap);
-  } catch {
-    res.status(500).json({ error: 'Failed to load editor code' });
-  }
-});
+sessionRouter.get(
+  '/:id/editor-code',
+  requireSessionAuth,
+  requireSessionAccess(),
+  async (req, res) => {
+    try {
+      const bootstrap = await getEditorBootstrap(req.params.id);
+      res.json(bootstrap);
+    } catch {
+      res.status(500).json({ error: 'Failed to load editor code' });
+    }
+  },
+);
+
+// GET /api/sessions/:id/question — Attached coding question (interviewer or invite participant)
+sessionRouter.get(
+  '/:id/question',
+  requireSessionAuth,
+  requireSessionAccess(),
+  async (req, res) => {
+    try {
+      const session = await getSession(req.params.id);
+      if (!session?.questionId) {
+        res.status(404).json({ error: 'No question attached' });
+        return;
+      }
+      const question = await getQuestion(session.questionId);
+      if (!question) {
+        res.status(404).json({ error: 'Question not found' });
+        return;
+      }
+      res.json(question);
+    } catch {
+      res.status(500).json({ error: 'Failed to load question' });
+    }
+  },
+);
 
 // GET /api/sessions/:id — Get session details
-sessionRouter.get('/:id', requireAuth, async (req, res) => {
+sessionRouter.get('/:id', requireSessionAuth, requireSessionAccess(), async (req, res) => {
   try {
     const session = await getSession(req.params.id);
     if (!session) {
@@ -95,6 +130,7 @@ sessionRouter.patch('/:id/question', requireAuth, async (req, res) => {
       res.status(404).json({ error: 'Interview not found' });
       return;
     }
+    await broadcastSessionQuestion(req.params.id);
     res.json(updated);
   } catch {
     res.status(500).json({ error: 'Failed to update question' });

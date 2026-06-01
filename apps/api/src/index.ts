@@ -15,6 +15,8 @@ import { livekitRouter } from './routes/livekit.routes';
 import { questionRouter } from './routes/question.routes';
 import { replayRouter } from './routes/replay.routes';
 import { setupYjsServer } from './yjs/server';
+import { setSocketServer } from './socket/emit';
+import { getSession } from './services/session.service';
 import { insertTelemetryBatch, computeTelemetrySummary } from './services/telemetry.service';
 import { saveSnapshot } from './services/snapshot.service';
 
@@ -32,6 +34,8 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
     credentials: true,
   },
 });
+
+setSocketServer(io);
 
 // Middleware
 app.use(cors({
@@ -107,16 +111,25 @@ io.on('connection', (socket) => {
   let participantRole: string | null = null;
   let participantId: string | null = null;
 
-  socket.on('session:join', ({ sessionId, token }) => {
+  socket.on('session:join', async ({ sessionId, token }) => {
     currentSessionId = sessionId;
     socket.join(sessionId);
     console.log(`[Socket] ${socket.id} joined session ${sessionId}`);
 
-    // Decode role from token (simple JWT decode — no verify needed here, REST auth handles security)
     try {
       const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-      participantRole = payload.role || null;
-      participantId = payload.participantId || null;
+
+      if (payload.type === 'session') {
+        participantRole = payload.role || null;
+        participantId = payload.participantId || null;
+      } else if (payload.userId) {
+        const session = await getSession(sessionId);
+        const participant = session?.participants.find((p) => p.userId === payload.userId);
+        if (participant) {
+          participantRole = participant.role;
+          participantId = participant.id;
+        }
+      }
 
       if (participantRole === 'interviewer') {
         interviewerSockets.set(sessionId, socket.id);

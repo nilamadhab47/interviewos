@@ -1,11 +1,8 @@
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
+import { getWsBaseUrl } from '@/lib/realtimeUrl';
 
-const WS_URL = import.meta.env.VITE_WS_URL
-  ? String(import.meta.env.VITE_WS_URL).replace(/^http/, 'ws')
-  : `ws://${window.location.host}`;
-
-const YJS_BASE = `${WS_URL}/yjs`;
+const YJS_BASE = `${getWsBaseUrl()}/yjs`;
 
 const COLORS = [
   '#6366f1',
@@ -65,6 +62,8 @@ function createRoom(roomId: string, userName: string, userRole: string): RoomEnt
   const provider = new WebsocketProvider(YJS_BASE, roomId, ydoc, {
     connect: true,
     disableBc: true,
+    /** Re-request server state periodically if sync was missed */
+    resyncInterval: 5000,
   });
 
   const entry: RoomEntry = {
@@ -95,6 +94,14 @@ function createRoom(roomId: string, userName: string, userRole: string): RoomEnt
 
   provider.on('status', onStatus);
   provider.on('sync', onSync);
+  provider.on('connection-error', (event: Event) => {
+    console.error('[Yjs] Connection error:', event);
+  });
+  provider.on('connection-close', () => {
+    entry.isConnected = false;
+    entry.isSynced = false;
+    notify(entry);
+  });
 
   // Store handlers for teardown
   (entry as RoomEntry & { _onStatus: typeof onStatus; _onSync: typeof onSync })._onStatus =

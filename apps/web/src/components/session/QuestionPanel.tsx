@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import {
   FileText,
@@ -8,15 +9,164 @@ import {
   CheckCircle,
   AlertCircle,
   Tag,
+  Maximize2,
+  X,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { Question } from '@/types/question';
 import { difficultyBadgeClass } from '@/types/question';
 
+function QuestionDetailBody({
+  question,
+  compact = false,
+}: {
+  question: Question;
+  compact?: boolean;
+}) {
+  const examples = compact ? question.testCases.slice(0, 3) : question.testCases;
+
+  return (
+    <>
+      <div className="flex items-start gap-3 flex-wrap">
+        <h4
+          className={
+            compact
+              ? 'text-sm font-medium'
+              : 'text-xl sm:text-2xl font-semibold text-text-primary'
+          }
+        >
+          {question.title}
+        </h4>
+        <span
+          className={`inline-block px-2.5 py-0.5 rounded text-xs font-semibold ${
+            difficultyBadgeClass[question.difficulty] || 'text-text-muted bg-bg-card'
+          }`}
+        >
+          {question.difficulty.charAt(0).toUpperCase() + question.difficulty.slice(1)}
+        </span>
+      </div>
+
+      <div
+        className={
+          compact
+            ? 'text-xs text-text-secondary leading-relaxed max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-bg-card/50 p-3 border border-border'
+            : 'text-sm sm:text-base text-text-secondary leading-relaxed whitespace-pre-wrap rounded-xl bg-bg-card/50 p-4 sm:p-5 border border-border'
+        }
+      >
+        {question.description}
+      </div>
+
+      {examples.length > 0 && (
+        <div className="space-y-2">
+          <span
+            className={
+              compact
+                ? 'text-[11px] font-medium text-text-muted'
+                : 'text-sm font-semibold text-text-primary'
+            }
+          >
+            Examples &amp; test cases
+          </span>
+          <div className={compact ? 'space-y-1.5' : 'space-y-3'}>
+            {examples.map((tc, i) => (
+              <div
+                key={i}
+                className={
+                  compact
+                    ? 'rounded-lg bg-bg-card/50 border border-border p-2 text-[11px] font-mono'
+                    : 'rounded-xl bg-bg-card/50 border border-border p-4 text-sm font-mono space-y-2'
+                }
+              >
+                <div className="text-text-muted">
+                  <span className="text-text-secondary font-sans font-medium">Input: </span>
+                  <span className="text-text-primary">{tc.input}</span>
+                </div>
+                <div className="text-text-muted">
+                  <span className="text-text-secondary font-sans font-medium">Expected: </span>
+                  <span className="text-emerald-400">{tc.expected}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {question.tags.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {question.tags.map((tag) => (
+            <span
+              key={tag}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-bg-card border border-border text-text-muted"
+            >
+              <Tag className="w-3 h-3" />
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function QuestionFullScreenModal({
+  question,
+  onClose,
+}: {
+  question: Question;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    document.addEventListener('keydown', onKeyDown);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex flex-col bg-bg-primary/95 backdrop-blur-md"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="question-modal-title"
+    >
+      <header className="flex items-center justify-between gap-4 px-4 sm:px-6 py-4 border-b border-border shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <FileText className="w-5 h-5 text-emerald-400 shrink-0" />
+          <span id="question-modal-title" className="text-sm font-semibold text-text-primary truncate">
+            Problem statement
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex items-center justify-center w-10 h-10 rounded-lg border border-border bg-bg-card hover:bg-bg-card-hover text-text-secondary hover:text-text-primary transition-colors shrink-0"
+          aria-label="Close"
+        >
+          <X className="w-5 h-5" />
+        </button>
+      </header>
+
+      <div className="flex-1 overflow-auto px-4 sm:px-6 py-6">
+        <div className="max-w-3xl mx-auto space-y-6">
+          <QuestionDetailBody question={question} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface QuestionPanelProps {
   sessionId: string;
   accessToken: string;
   currentQuestionId?: string | null;
+  /** Preloaded from session page (schedule flow or parent fetch) */
+  attachedQuestion?: Question | null;
   isInterviewer: boolean;
   language: string;
   onQuestionSelected?: (question: Question) => void;
@@ -26,6 +176,7 @@ export default function QuestionPanel({
   sessionId,
   accessToken,
   currentQuestionId,
+  attachedQuestion,
   isInterviewer,
   language,
   onQuestionSelected,
@@ -34,17 +185,40 @@ export default function QuestionPanel({
   const [questions, setQuestions] = useState<Question[]>([]);
   const [selectedQuestion, setSelectedQuestion] = useState<Question | null>(null);
   const [showPicker, setShowPicker] = useState(false);
+  const [showFullQuestion, setShowFullQuestion] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Fetch current question if set
+  // Prefer question preloaded by SessionPage; fall back to session-scoped fetch
   useEffect(() => {
-    if (currentQuestionId && accessToken) {
-      api<Question>(`/api/questions/${currentQuestionId}`, { token: accessToken })
-        .then(setSelectedQuestion)
-        .catch(console.error);
+    if (attachedQuestion) {
+      setSelectedQuestion(attachedQuestion);
+      return;
     }
-  }, [currentQuestionId, accessToken]);
+
+    if (!currentQuestionId || !accessToken) {
+      setSelectedQuestion(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    api<Question>(`/api/sessions/${sessionId}/question`, { token: accessToken })
+      .then((question) => {
+        if (!cancelled) setSelectedQuestion(question);
+      })
+      .catch(() => {
+        if (!cancelled) setSelectedQuestion(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [attachedQuestion, currentQuestionId, accessToken, sessionId]);
+
+  useEffect(() => {
+    setShowFullQuestion(false);
+  }, [selectedQuestion?.id]);
 
   // Fetch question bank when picker opens
   const fetchQuestions = useCallback(async () => {
@@ -107,68 +281,33 @@ export default function QuestionPanel({
         <div className="px-4 pb-4">
           {selectedQuestion ? (
             <div className="space-y-3">
-              {/* Question header */}
               <div className="flex items-start gap-2">
-                <div className="flex-1 min-w-0">
-                  <h4 className="text-sm font-medium">{selectedQuestion.title}</h4>
-                  <span
-                    className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold mt-1 ${
-                      difficultyBadgeClass[selectedQuestion.difficulty] || 'text-text-muted bg-bg-card'
-                    }`}
-                  >
-                    {selectedQuestion.difficulty.charAt(0).toUpperCase() +
-                      selectedQuestion.difficulty.slice(1)}
-                  </span>
+                <div className="flex-1 min-w-0 space-y-3">
+                  <QuestionDetailBody question={selectedQuestion} compact />
                 </div>
-                {isInterviewer && (
-                  <button
-                    onClick={() => setShowPicker(true)}
-                    className="text-[11px] text-accent-glow hover:underline shrink-0"
-                  >
-                    Change
-                  </button>
-                )}
-              </div>
-
-              {/* Description */}
-              <div className="text-xs text-text-secondary leading-relaxed max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-bg-card/50 p-3 border border-border">
-                {selectedQuestion.description}
-              </div>
-
-              {/* Test cases */}
-              {selectedQuestion.testCases.length > 0 && (
-                <div className="space-y-1.5">
-                  <span className="text-[11px] font-medium text-text-muted">Examples</span>
-                  {selectedQuestion.testCases.slice(0, 3).map((tc, i) => (
-                    <div
-                      key={i}
-                      className="rounded-lg bg-bg-card/50 border border-border p-2 text-[11px] font-mono"
+                <div className="flex flex-col gap-1.5 shrink-0">
+                  {!isInterviewer && (
+                    <button
+                      type="button"
+                      onClick={() => setShowFullQuestion(true)}
+                      className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-bg-card hover:bg-bg-card-hover border border-border text-[11px] text-text-secondary hover:text-accent-glow transition-colors"
+                      title="Expand question"
                     >
-                      <div className="text-text-muted">
-                        Input: <span className="text-text-secondary">{tc.input}</span>
-                      </div>
-                      <div className="text-text-muted">
-                        Expected: <span className="text-emerald-400">{tc.expected}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Tags */}
-              {selectedQuestion.tags.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {selectedQuestion.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-bg-card border border-border text-text-muted"
+                      <Maximize2 className="w-3.5 h-3.5" />
+                      Expand
+                    </button>
+                  )}
+                  {isInterviewer && (
+                    <button
+                      type="button"
+                      onClick={() => setShowPicker(true)}
+                      className="text-[11px] text-accent-glow hover:underline text-left"
                     >
-                      <Tag className="w-2.5 h-2.5" />
-                      {tag}
-                    </span>
-                  ))}
+                      Change
+                    </button>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           ) : (
             <div className="text-center py-4">
@@ -185,6 +324,16 @@ export default function QuestionPanel({
               )}
             </div>
           )}
+
+          {showFullQuestion &&
+            selectedQuestion &&
+            createPortal(
+              <QuestionFullScreenModal
+                question={selectedQuestion}
+                onClose={() => setShowFullQuestion(false)}
+              />,
+              document.body,
+            )}
 
           {/* Question picker modal */}
           {showPicker && (

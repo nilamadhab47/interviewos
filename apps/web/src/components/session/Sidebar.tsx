@@ -23,6 +23,7 @@ interface SidebarProps {
   candidateJoinUrl?: string | null;
   isInterviewer: boolean;
   currentQuestionId?: string | null;
+  attachedQuestion?: Question | null;
   language: string;
   permissions?: SessionPermissions;
   onStartSession?: () => void;
@@ -47,6 +48,7 @@ export default function Sidebar({
   candidateJoinUrl,
   isInterviewer,
   currentQuestionId,
+  attachedQuestion,
   language,
   permissions = DEFAULT_PERMISSIONS,
   onStartSession,
@@ -109,6 +111,7 @@ export default function Sidebar({
           sessionId={sessionId}
           accessToken={accessToken}
           currentQuestionId={currentQuestionId}
+          attachedQuestion={attachedQuestion}
           isInterviewer={isInterviewer}
           language={language}
           onQuestionSelected={onQuestionSelected}

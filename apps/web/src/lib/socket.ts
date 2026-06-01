@@ -1,7 +1,8 @@
 import { io, Socket } from 'socket.io-client';
 import type { ServerToClientEvents, ClientToServerEvents } from '@interviewos/shared';
+import { getSocketHttpUrl } from '@/lib/realtimeUrl';
 
-const SOCKET_URL = import.meta.env.VITE_API_URL || '';
+const SOCKET_URL = getSocketHttpUrl();
 
 let socket: Socket<ServerToClientEvents, ClientToServerEvents> | null = null;
 
@@ -18,8 +19,16 @@ export function getSocket(): Socket<ServerToClientEvents, ClientToServerEvents> 
 
 export function connectSocket(token: string): void {
   const s = getSocket();
+  const prev = (s.auth as { token?: string } | undefined)?.token;
+  s.auth = { token };
+
   if (!s.connected) {
-    s.auth = { token };
+    s.connect();
+    return;
+  }
+
+  if (prev !== token) {
+    s.disconnect();
     s.connect();
   }
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useLocation } from 'react-router-dom';
 import { Code2, Play, ChevronDown, Wifi, WifiOff, Video, VideoOff, PanelRightOpen, PanelRightClose } from 'lucide-react';
 import { LANGUAGES, getLanguageById } from '@interviewos/shared';
 import type { SessionPermissions } from '@interviewos/shared';
@@ -14,10 +14,17 @@ import { useSessionStore } from '@/stores/sessionStore';
 import { useYjs } from '@/hooks/useYjs';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { useAntiCheat } from '@/hooks/useAntiCheat';
-import { connectSocket } from '@/lib/socket';
+import { getSocket } from '@/lib/socket';
 import { api, ApiError } from '@/lib/api';
+import { useSessionSocket } from '@/hooks/useSessionSocket';
+import type { SessionQuestionPayload } from '@interviewos/shared';
+import { fetchSessionQuestion } from '@/lib/sessionApi';
 import { resolveStarterCode } from '@/lib/questionCode';
 import type { Question } from '@/types/question';
+
+type SessionLocationState = {
+  scheduledQuestion?: Question;
+};
 
 interface CompileResult {
   stdout: string | null;
@@ -30,13 +37,17 @@ interface CompileResult {
 
 export default function SessionPage() {
   const { id } = useParams<{ id: string }>();
-  const { user, accessToken } = useAuthStore();
-  const { session, fetchSession } = useSessionStore();
+  const location = useLocation();
+  const scheduledQuestion = (location.state as SessionLocationState | null)?.scheduledQuestion;
+  const { user, accessToken, authMode } = useAuthStore();
+  const { session, fetchSession, clearSession } = useSessionStore();
   const editorRef = useRef<MonacoEditorHandle>(null);
   const lastAppliedQuestionKey = useRef<string | null>(null);
 
   const [language, setLanguage] = useState('javascript');
-  const [attachedQuestion, setAttachedQuestion] = useState<Question | null>(null);
+  const [attachedQuestion, setAttachedQuestion] = useState<Question | null>(
+    scheduledQuestion ?? null,
+  );
   const [compileResult, setCompileResult] = useState<CompileResult | null>(null);
   const [isCompiling, setIsCompiling] = useState(false);
   const [showLangDropdown, setShowLangDropdown] = useState(false);
@@ -49,18 +60,35 @@ export default function SessionPage() {
     allowRunCode: true,
   });
 
-  // Yjs collaboration
+  const myParticipant = session?.participants?.find(
+    (p) => p.userId === user?.id || p.id === user?.id,
+  );
+  const participantRole =
+    myParticipant?.role ?? (authMode === 'session' ? 'candidate' : 'interviewer');
+
+  // Yjs collaboration — same room id as session id for shared editor
   const yjsState = useYjs({
     roomId: id || '',
     userName: user?.name || user?.email || 'Anonymous',
-    userRole: 'interviewer',
+    userRole: participantRole,
   });
 
+  useSessionSocket(id, accessToken ?? undefined);
+
   useEffect(() => {
-    if (id && accessToken) {
-      fetchSession(id, accessToken);
-    }
+    if (!id || !accessToken) return;
+    fetchSession(id, accessToken);
   }, [id, accessToken, fetchSession]);
+
+  useEffect(() => {
+    return () => clearSession();
+  }, [clearSession]);
+
+  useEffect(() => {
+    if (scheduledQuestion) {
+      setAttachedQuestion(scheduledQuestion);
+    }
+  }, [scheduledQuestion]);
 
   useEffect(() => {
     if (session) {
@@ -69,34 +97,37 @@ export default function SessionPage() {
     }
   }, [session]);
 
-  // Load question when interview was scheduled with one attached
+  // Load attached question from session (after schedule, refresh, or candidate join)
   useEffect(() => {
-    if (!session?.questionId || !accessToken) {
-      setAttachedQuestion(null);
-      lastAppliedQuestionKey.current = null;
+    if (!id || !accessToken) return;
+
+    if (!session?.questionId) {
+      if (!scheduledQuestion) {
+        setAttachedQuestion(null);
+        lastAppliedQuestionKey.current = null;
+      }
       return;
     }
 
-    api<Question>(`/api/questions/${session.questionId}`, { token: accessToken })
-      .then(setAttachedQuestion)
-      .catch(() => setAttachedQuestion(null));
-  }, [session?.questionId, accessToken]);
+    let cancelled = false;
+
+    fetchSessionQuestion(id, accessToken).then((question) => {
+      if (!cancelled) {
+        setAttachedQuestion(question);
+        if (!question) {
+          lastAppliedQuestionKey.current = null;
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id, session?.questionId, accessToken, scheduledQuestion]);
 
   const currentLang = getLanguageById(language);
   const editorStarterCode = resolveStarterCode(attachedQuestion, language);
-  const isInterviewer = session?.participants?.some(
-    (p) => p.userId === user?.id && p.role === 'interviewer',
-  ) ?? false;
-
-  // Find our own participant record for telemetry
-  const myParticipant = session?.participants?.find((p) => p.userId === user?.id);
-
-  // Connect socket when we have a session
-  useEffect(() => {
-    if (accessToken && id) {
-      connectSocket(accessToken);
-    }
-  }, [accessToken, id]);
+  const isInterviewer = participantRole === 'interviewer';
 
   // Telemetry — only for candidates
   const { trackCompile } = useTelemetry({
@@ -239,6 +270,19 @@ export default function SessionPage() {
     };
   }, [attachedQuestion, language, applyQuestionStarterCode, persistEditorSnapshot]);
 
+  // Re-apply starter when Yjs finishes syncing (fixes "only after connect" race)
+  useEffect(() => {
+    if (!attachedQuestion || !yjsState?.isSynced) return;
+
+    const run = () => {
+      applyQuestionStarterCode(attachedQuestion, language, { onlyIfEmpty: true });
+    };
+
+    run();
+    const t = window.setTimeout(run, 150);
+    return () => window.clearTimeout(t);
+  }, [attachedQuestion, language, yjsState?.isSynced, applyQuestionStarterCode]);
+
   const handleQuestionSelected = useCallback(
     (question: Question) => {
       setAttachedQuestion(question);
@@ -247,6 +291,35 @@ export default function SessionPage() {
     },
     [language, applyQuestionStarterCode, persistEditorSnapshot],
   );
+
+  // Realtime question sync when interviewer attaches or changes the question
+  useEffect(() => {
+    if (!id) return;
+
+    const socket = getSocket();
+
+    const onQuestionChanged = (payload: SessionQuestionPayload) => {
+      if (payload.language) {
+        setLanguage(payload.language);
+      }
+
+      if (!payload.question) {
+        setAttachedQuestion(null);
+        lastAppliedQuestionKey.current = null;
+        return;
+      }
+
+      const question = payload.question as Question;
+      setAttachedQuestion(question);
+      applyQuestionStarterCode(question, payload.language || language, { force: true });
+      persistEditorSnapshot(payload.language || language);
+    };
+
+    socket.on('session:question_changed', onQuestionChanged);
+    return () => {
+      socket.off('session:question_changed', onQuestionChanged);
+    };
+  }, [id, language, applyQuestionStarterCode, persistEditorSnapshot]);
 
   const getCurrentCode = useCallback((): string => {
     const fromEditor = editorRef.current?.getValue();
@@ -486,6 +559,7 @@ export default function SessionPage() {
                   candidateJoinUrl={candidateJoinUrl}
                   isInterviewer={isInterviewer}
                   currentQuestionId={session?.questionId}
+                  attachedQuestion={attachedQuestion}
                   language={language}
                   permissions={permissions}
                   onPermissionsChanged={setPermissions}

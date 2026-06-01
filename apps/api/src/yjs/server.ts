@@ -10,16 +10,15 @@ import { hydrateYjsDocument } from '../services/yjs-hydrate.service';
 
 const MSG_SYNC = 0;
 const MSG_AWARENESS = 1;
-const MSG_AUTH = 2;
 const MSG_QUERY_AWARENESS = 3;
 
-// Store documents in memory (per session)
-const docs = new Map<string, {
+type Room = {
   doc: Y.Doc;
   awareness: awarenessProtocol.Awareness;
   conns: Map<WebSocket, Set<number>>;
-}>();
+};
 
+const docs = new Map<string, Room>();
 const hydrationScheduled = new Set<string>();
 
 function scheduleRoomHydration(roomName: string, doc: Y.Doc) {
@@ -35,44 +34,46 @@ function scheduleRoomHydration(roomName: string, doc: Y.Doc) {
     });
 }
 
-function getOrCreateDoc(roomName: string) {
-  let room = docs.get(roomName);
-  if (!room) {
-    const doc = new Y.Doc();
-    const awareness = new awarenessProtocol.Awareness(doc);
+function broadcastToRoom(room: Room, buf: Uint8Array, exclude?: WebSocket) {
+  room.conns.forEach((_, conn) => {
+    if (conn !== exclude && conn.readyState === WebSocket.OPEN) {
+      conn.send(buf);
+    }
+  });
+}
 
-    // Clean up awareness when a client disconnects
-    awareness.on('update', ({ added, updated, removed }: {
-      added: number[];
-      updated: number[];
-      removed: number[];
-    }) => {
-      const changedClients = added.concat(updated, removed);
-      const encoder = encoding.createEncoder();
-      encoding.writeVarUint(encoder, MSG_AWARENESS);
-      encoding.writeVarUint8Array(
-        encoder,
-        awarenessProtocol.encodeAwarenessUpdate(awareness, changedClients),
-      );
-      const buf = encoding.toUint8Array(encoder);
-      const r = docs.get(roomName);
-      if (r) {
-        r.conns.forEach((_, conn) => {
-          if (conn.readyState === WebSocket.OPEN) {
-            conn.send(buf);
-          }
-        });
-      }
-    });
+function getOrCreateDoc(roomName: string): Room {
+  const existing = docs.get(roomName);
+  if (existing) return existing;
 
-    room = { doc, awareness, conns: new Map() };
-    docs.set(roomName, room);
-    scheduleRoomHydration(roomName, doc);
-  }
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  const room: Room = { doc, awareness, conns: new Map() };
+
+  doc.on('update', (update: Uint8Array, origin: unknown) => {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MSG_SYNC);
+    syncProtocol.writeUpdate(encoder, update);
+    broadcastToRoom(room, encoding.toUint8Array(encoder), origin as WebSocket);
+  });
+
+  awareness.on('update', ({ added, updated, removed }) => {
+    const changedClients = added.concat(updated, removed);
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MSG_AWARENESS);
+    encoding.writeVarUint8Array(
+      encoder,
+      awarenessProtocol.encodeAwarenessUpdate(awareness, changedClients),
+    );
+    broadcastToRoom(room, encoding.toUint8Array(encoder));
+  });
+
+  docs.set(roomName, room);
+  scheduleRoomHydration(roomName, doc);
   return room;
 }
 
-function handleMessage(conn: WebSocket, room: ReturnType<typeof getOrCreateDoc>, message: Uint8Array) {
+function handleMessage(conn: WebSocket, room: Room, message: Uint8Array) {
   const decoder = decoding.createDecoder(message);
   const messageType = decoding.readVarUint(decoder);
 
@@ -92,7 +93,6 @@ function handleMessage(conn: WebSocket, room: ReturnType<typeof getOrCreateDoc>,
       break;
     }
     case MSG_QUERY_AWARENESS: {
-      // Client is asking for all awareness states
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, MSG_AWARENESS);
       encoding.writeVarUint8Array(
@@ -109,7 +109,6 @@ function handleMessage(conn: WebSocket, room: ReturnType<typeof getOrCreateDoc>,
 }
 
 function sendSync(conn: WebSocket, doc: Y.Doc) {
-  // Send sync step 1
   const encoder = encoding.createEncoder();
   encoding.writeVarUint(encoder, MSG_SYNC);
   syncProtocol.writeSyncStep1(encoder, doc);
@@ -118,25 +117,20 @@ function sendSync(conn: WebSocket, doc: Y.Doc) {
 
 function sendAwareness(conn: WebSocket, awareness: awarenessProtocol.Awareness) {
   const states = awareness.getStates();
-  if (states.size > 0) {
-    const encoder = encoding.createEncoder();
-    encoding.writeVarUint(encoder, MSG_AWARENESS);
-    encoding.writeVarUint8Array(
-      encoder,
-      awarenessProtocol.encodeAwarenessUpdate(
-        awareness,
-        Array.from(states.keys()),
-      ),
-    );
-    conn.send(encoding.toUint8Array(encoder));
-  }
+  if (states.size === 0) return;
+
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MSG_AWARENESS);
+  encoding.writeVarUint8Array(
+    encoder,
+    awarenessProtocol.encodeAwarenessUpdate(awareness, Array.from(states.keys())),
+  );
+  conn.send(encoding.toUint8Array(encoder));
 }
 
 export function setupYjsServer(httpServer: HttpServer) {
   const wss = new WebSocketServer({ noServer: true });
 
-  // Handle upgrade on /yjs/* path
-  // y-websocket client connects to: ws://host/yjs/{roomName}
   httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
     const url = new URL(request.url || '', `http://${request.headers.host}`);
 
@@ -145,13 +139,13 @@ export function setupYjsServer(httpServer: HttpServer) {
         wss.emit('connection', ws, request);
       });
     }
-    // Let socket.io handle its own upgrades (it won't match /yjs)
   });
 
   wss.on('connection', (conn: WebSocket, req: IncomingMessage) => {
+    conn.binaryType = 'arraybuffer';
+
     const url = new URL(req.url || '', `http://${req.headers.host}`);
-    // y-websocket sends: /yjs/{roomName}?... — extract room from path
-    const pathParts = url.pathname.split('/').filter(Boolean); // ['yjs', 'roomName']
+    const pathParts = url.pathname.split('/').filter(Boolean);
     const roomName = pathParts[1] || url.searchParams.get('room');
 
     if (!roomName) {
@@ -164,38 +158,19 @@ export function setupYjsServer(httpServer: HttpServer) {
 
     console.log(`[Yjs] Client connected to room: ${roomName} (${room.conns.size} clients)`);
 
-    // Send initial sync
     sendSync(conn, room.doc);
     sendAwareness(conn, room.awareness);
 
-    // Listen for doc updates and broadcast to other clients.
-    // Use the connection as origin so we can skip broadcasting back to the sender.
-    const docUpdateHandler = (update: Uint8Array, origin: unknown) => {
-      const encoder = encoding.createEncoder();
-      encoding.writeVarUint(encoder, MSG_SYNC);
-      syncProtocol.writeUpdate(encoder, update);
-      const buf = encoding.toUint8Array(encoder);
-
-      room.conns.forEach((_, c) => {
-        // Don't echo back to the origin connection
-        if (c !== origin && c.readyState === WebSocket.OPEN) {
-          c.send(buf);
-        }
-      });
-    };
-    room.doc.on('update', docUpdateHandler);
-
     conn.on('message', (data: ArrayBuffer | Buffer) => {
-      // IMPORTANT: Buffer.buffer returns the pooled ArrayBuffer which is much larger
-      // than the actual message. We must copy just the message bytes.
-      const message = new Uint8Array(data instanceof ArrayBuffer ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+      const message = new Uint8Array(
+        data instanceof ArrayBuffer
+          ? data
+          : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+      );
       handleMessage(conn, room, message);
     });
 
     conn.on('close', () => {
-      room.doc.off('update', docUpdateHandler);
-
-      // Remove awareness states for this client
       const controlledIds = room.conns.get(conn);
       room.conns.delete(conn);
 
@@ -209,7 +184,6 @@ export function setupYjsServer(httpServer: HttpServer) {
 
       console.log(`[Yjs] Client disconnected from room: ${roomName} (${room.conns.size} clients)`);
 
-      // Clean up empty rooms after a delay
       if (room.conns.size === 0) {
         setTimeout(() => {
           const r = docs.get(roomName);
@@ -218,7 +192,7 @@ export function setupYjsServer(httpServer: HttpServer) {
             docs.delete(roomName);
             console.log(`[Yjs] Room destroyed: ${roomName}`);
           }
-        }, 30000); // 30 second grace period
+        }, 30000);
       }
     });
   });
@@ -227,7 +201,6 @@ export function setupYjsServer(httpServer: HttpServer) {
   return wss;
 }
 
-// Export for snapshot/persistence
 export function getDocState(roomName: string): Uint8Array | null {
   const room = docs.get(roomName);
   if (!room) return null;

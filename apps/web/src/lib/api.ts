@@ -1,3 +1,5 @@
+import { isUserAccessToken } from '@/lib/jwt';
+
 const API_URL = import.meta.env.VITE_API_URL || '';
 
 interface ApiOptions {
@@ -96,13 +98,14 @@ export async function api<T = unknown>(
 
   let res = await doFetch(token);
 
-  if (
-    res.status === 401 &&
-    !skipAuthRetry &&
-    refreshHandler &&
-    !options.token &&
-    path !== '/api/auth/refresh'
-  ) {
+  const bearer = token ?? tokenGetter() ?? '';
+  const canRefresh =
+    Boolean(bearer) &&
+    isUserAccessToken(bearer) &&
+    path !== '/api/auth/me' &&
+    path !== '/api/auth/refresh';
+
+  if (res.status === 401 && !skipAuthRetry && refreshHandler && canRefresh) {
     const ok = await refreshHandler();
     if (ok) {
       const newToken = tokenGetter();

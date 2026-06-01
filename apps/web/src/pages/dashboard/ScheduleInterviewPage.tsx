@@ -45,7 +45,9 @@ export default function ScheduleInterviewPage() {
         },
         accessToken,
       );
-      navigate(`/session/${result.session.id}`);
+      navigate(`/session/${result.session.id}`, {
+        state: selectedQuestion ? { scheduledQuestion: selectedQuestion } : undefined,
+      });
     } catch (err) {
       setFormError(
         err instanceof ApiError
